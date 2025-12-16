@@ -1,0 +1,81 @@
+# ImageBrowser
+
+一个使用 SwiftUI 开发的 macOS 图片浏览器应用，支持浏览、查看和管理图片文件。
+
+## 功能特点
+
+- 🖼️ 支持多种图片格式（JPG、PNG、GIF、BMP、TIFF、WebP等）
+- 📁 支持打开整个文件夹并浏览其中的图片
+- 🔍 缩略图预览和快速加载
+- 🖱️ 支持鼠标滚轮切换图片
+- ⌨️ 键盘快捷键支持
+- 🗑️ 支持删除图片到回收站
+- 🎵 自动播放功能（幻灯片模式）
+- 📐 自适应窗口大小
+
+## 系统要求
+
+- macOS 12.0 或更高版本
+- Xcode 13.0 或更高版本（用于开发）
+
+## 快速开始
+
+### 安装
+
+1. 克隆仓库
+```bash
+git clone [repository-url]
+cd ImageBrowser
+```
+
+2. 构建项目
+```bash
+swift build
+```
+
+3. 运行应用
+```bash
+swift run
+```
+
+或在 Xcode 中打开项目并运行。
+
+### 使用方法
+
+1. **打开图片**：
+   - 点击"打开..."按钮选择文件夹
+   - 直接拖拽图片文件到应用窗口
+   - 从 Finder 中使用"打开方式"功能
+
+2. **浏览图片**：
+   - 在列表视图中单击选择图片
+   - 双击打开详情视图
+   - 使用鼠标滚轮或方向键切换图片
+
+3. **快捷键**：
+   - `空格` - 播放/暂停自动播放
+   - `←/→` - 上一张/下一张图片
+   - `回车` - 返回列表视图
+   - `Delete/Backspace` - 删除当前图片
+   - `\` - 在 Finder 中显示当前图片
+
+## 项目结构
+
+```
+Sources/ImageBrowser/
+├── ImageBrowserApp.swift      # 应用入口点和窗口管理
+├── AppState.swift             # 应用状态管理和通知定义
+├── Models/
+│   └── ImageModel.swift       # 图片数据模型
+├── ViewModels/
+│   ├── ImageBrowserViewModel.swift  # 图片列表视图模型
+│   ├── ImageDetailViewModel.swift  # 图片详情视图模型
+│   └── LayoutCalculatorOpt.swift   # 布局计算优化
+├── Views/
+│   ├── ImageBrowserView.swift # 图片列表视图
+│   ├── ImageDetailView.swift  # 图片详情视图
+│   └── LaunchView.swift       # 启动界面
+└── Extensions/
+    └── NSImage+Sharpening.swift # 图片锐化扩展
+```
+
