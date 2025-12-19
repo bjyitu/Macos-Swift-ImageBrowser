@@ -4,7 +4,7 @@ import SwiftUI
 private enum AutoPlayConstants {
     static let totalPlayInterval: TimeInterval = 3.0 // 每张图片显示的总时间（秒）
     static let progressUpdateInterval: TimeInterval = 0.05 // 进度条更新间隔（秒）
-    static let animationDelay: TimeInterval = 0.05 // 动画延迟时间（秒）
+    static let animationDelay: TimeInterval = 0.1 // 动画延迟时间（秒）
 }
 
 struct ImageDetailView: View {
@@ -12,7 +12,7 @@ struct ImageDetailView: View {
     @State private var scale: CGFloat = 1.0
     @State private var isPlaying = false
     @State private var buttonScale: CGFloat = 1.0
-    @State private var buttonOpacity: Double = 0.2
+    @State private var buttonOpacity: Double = 0.3
     @State private var autoPlayTimer: Timer?
     @State private var progress: Double = 0.0
     
@@ -26,7 +26,7 @@ struct ImageDetailView: View {
         _isFirstOpen = State(initialValue: true)
     }
     
-    @State private var isFirstOpen = false
+    @State private var isFirstOpen: Bool
     
     // 切换到上一张图片
     private func showPreviousImage(stopPlayback: Bool = true) {
@@ -39,14 +39,13 @@ struct ImageDetailView: View {
               let currentIndex = AppState.shared.images.firstIndex(of: currentImageItem),
               !AppState.shared.images.isEmpty else { return }
         
-        let previousIndex: Int
-        if currentIndex > 0 {
-            previousIndex = currentIndex - 1
-        } else {
-            // 如果是第一张图片，循环到最后一张
-            previousIndex = AppState.shared.images.count - 1
+        // 取消循环浏览：如果是第一张图片，则不进行切换
+        if currentIndex == 0 {
+            print("已经是第一张图片，无法继续向前浏览")
+            return
         }
         
+        let previousIndex = currentIndex - 1
         let previousImage = AppState.shared.images[previousIndex]
         
         // 优化：先更新列表页选中状态，再切换图片
@@ -72,12 +71,13 @@ struct ImageDetailView: View {
               let currentIndex = AppState.shared.images.firstIndex(of: currentImageItem),
               !AppState.shared.images.isEmpty else { return }
         
+        // 循环浏览：如果是最后一张图片，则跳转到第一张
         let nextIndex: Int
-        if currentIndex < AppState.shared.images.count - 1 {
-            nextIndex = currentIndex + 1
-        } else {
-            // 如果是最后一张图片，循环到第一张
+        if currentIndex == AppState.shared.images.count - 1 {
             nextIndex = 0
+            print("到底了 = \(currentIndex)")
+        } else {
+            nextIndex = currentIndex + 1
         }
         
         let nextImage = AppState.shared.images[nextIndex]
@@ -195,25 +195,33 @@ struct ImageDetailView: View {
             } else {
                 // 删除成功，更新UI
                 DispatchQueue.main.async {
+                    // 先获取被删除图片的索引，然后再从列表中移除
+                    let deletedIndex = AppState.shared.images.firstIndex(of: imageItem)
+                    
                     // 从应用状态中移除图片
                     AppState.shared.images.removeAll { $0.id == imageItem.id }
                     
+                    // 清理被删除图片的缓存
+                    let cacheKey = imageItem.url.absoluteString as NSString
+                    self.viewModel.imageCache.removeObject(forKey: cacheKey)
+                    
                     // 如果删除后还有图片，显示下一张或上一张
                     if !AppState.shared.images.isEmpty {
-                        // 尝试显示下一张，如果没有则显示上一张
-                        if let currentIndex = AppState.shared.images.firstIndex(of: imageItem) {
-                            if currentIndex < AppState.shared.images.count {
-                                // 显示下一张
-                                let nextImage = AppState.shared.images[currentIndex]
+                        // 使用之前获取的索引来决定显示哪张图片
+                        if let index = deletedIndex {
+                            if index < AppState.shared.images.count {
+                                // 显示下一张（原来位置的图片）
+                                let nextImage = AppState.shared.images[index]
                                 self.viewModel.switchToImage(nextImage, shouldAdjustWindow: false)
-                            } else if currentIndex > 0 {
-                                // 如果是最后一张，显示上一张
-                                let previousImage = AppState.shared.images[currentIndex - 1]
-                                self.viewModel.switchToImage(previousImage, shouldAdjustWindow: false)
                             } else {
-                                // 只剩一张图片，显示它
-                                let remainingImage = AppState.shared.images[0]
-                                self.viewModel.switchToImage(remainingImage, shouldAdjustWindow: false)
+                                // 如果删除的是最后一张，显示上一张
+                                let previousImage = AppState.shared.images[index - 1]
+                                self.viewModel.switchToImage(previousImage, shouldAdjustWindow: false)
+                            }
+                        } else {
+                            // 如果无法获取索引，显示第一张图片
+                            if let firstImage = AppState.shared.images.first {
+                                self.viewModel.switchToImage(firstImage, shouldAdjustWindow: false)
                             }
                         }
                     } else {
@@ -269,8 +277,8 @@ struct ImageDetailView: View {
             if let image = viewModel.fullImage {
                 Image(nsImage: image)
                     .resizable()
-                    .antialiased(true)
                     .interpolation(.high)
+                    .antialiased(true)
                     .contrast(1.2)
                     .brightness(0.02)
                     .aspectRatio(contentMode: .fit)
@@ -278,8 +286,15 @@ struct ImageDetailView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .edgesIgnoringSafeArea(.all)
             } else {
-                Text("无法加载图片")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle())
+                        .foregroundColor(.gray)
+                    Text(" ")
+                        .font(.system(size: 14))
+                        .foregroundColor(.gray)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .padding(0)
@@ -287,7 +302,7 @@ struct ImageDetailView: View {
         .onChange(of: viewModel.imageItem) { _ in
             scale = 1
             DispatchQueue.main.asyncAfter(deadline: .now() + AutoPlayConstants.animationDelay) {
-                withAnimation(.easeOut(duration: 0.3)) {
+                withAnimation(.easeOut(duration: 0.2)) {
                     scale = 1.005
                 }
             }
@@ -298,48 +313,38 @@ struct ImageDetailView: View {
             
             // 只在首次打开时调整窗口大小和位置
             if isFirstOpen {
-                if let window = NSApp.keyWindow {
-                    adjustWindowSizeForImage(window: window)
+                // 使用多种方式尝试获取窗口
+                var targetWindow: NSWindow?
+                
+                // 方法1: 尝试使用keyWindow
+                if let keyWindow = NSApp.keyWindow {
+                    targetWindow = keyWindow
                 }
+                // 方法2: 查找最新创建的包含ImageDetailView的窗口
+                else if let window = NSApp.windows.last(where: { $0.contentViewController is NSHostingController<ImageDetailView> }) {
+                    targetWindow = window
+                }
+                // 方法3: 查找主窗口
+                else if let mainWindow = NSApp.mainWindow {
+                    targetWindow = mainWindow
+                }
+                
+                if let window = targetWindow {
+                    // 延迟一点时间确保窗口完全初始化
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
+                        self.adjustWindowSizeForImage(window: window)
+                    }
+                }
+                
                 isFirstOpen = false // 标记为已定位
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .adjustWindowSize)) { notification in
-            // 接收调整窗口大小的通知
-            if let userInfo = notification.userInfo,
-               let windowSize = userInfo["windowSize"] as? CGSize,
-               let window = NSApp.windows.first(where: { $0.contentViewController is NSHostingController<ImageDetailView> }) {
-                
-                // 获取屏幕尺寸
-                guard let screen = NSScreen.main else { return }
-                let screenWidth = screen.visibleFrame.size.width
-                let screenHeight = screen.visibleFrame.size.height
-                
-                // 计算居中位置
-                let centerX = screen.visibleFrame.origin.x + (screenWidth - windowSize.width) / 2
-                let centerY = screen.visibleFrame.origin.y + (screenHeight - windowSize.height) / 2
-                
-                // 设置窗口位置和大小
-                let newFrame = NSRect(
-                    x: centerX,
-                    y: centerY,
-                    width: windowSize.width,
-                    height: windowSize.height
-                )
-                
-                window.setFrame(newFrame, display: true, animate: true)
-            }
-        }
-        .onChange(of: viewModel.fullImage) { _ in
-            // 当图片加载完成后，更新窗口标题和大小
-            updateWindowTitle()
         }
         .onChange(of: AppState.shared.images) { _ in
             // 当图片列表加载完成后，更新窗口标题
             print("Images list changed, count: \(AppState.shared.images.count)")
             updateWindowTitle()
         }
-        .frame(minWidth: 100, minHeight: 100)
+        .frame(minWidth: 50, minHeight: 50)
         .edgesIgnoringSafeArea([.top, .leading, .trailing])
         .onTapGesture(count: 2) {
             // 双击隐藏单页窗口并显示列表窗口
@@ -378,16 +383,12 @@ struct ImageDetailView: View {
                         progress: progress,
                         onToggle: togglePlayPause,
                         onHover: { isHovering in
-                            withAnimation(.easeInOut(duration: 0.1)) {
-                                buttonOpacity = isHovering ? 0.9 : 0.2
-                            }
+                            buttonOpacity = isHovering ? 0.9 : 0.3
                         },
                         onPress: {
-                            withAnimation(.easeInOut(duration: 0.1)) {
-                                buttonScale = 0.8
-                            }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                withAnimation(.easeInOut(duration: 0.1)) {
+                            buttonScale = 0.9
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                withAnimation(.linear(duration: 0.1)) {
                                     buttonScale = 1.0
                                 }
                             }
@@ -442,7 +443,7 @@ struct PlayPauseButton: View {
                     )
                 )
                 .frame(width: 50, height: 50)
-                .rotationEffect(.degrees(-90))
+                .rotationEffect(.degrees(-90))//从默认的3点钟方向转到12点钟方向
                 .animation(isPlaying ? .linear(duration: AutoPlayConstants.progressUpdateInterval) : .none, value: progress)
             
             Button(action: {
@@ -451,12 +452,12 @@ struct PlayPauseButton: View {
             }) {
                 Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 30))
-            }
-            .background(
-                Circle()
-                    .fill(Color.black.opacity(0.3))
                     .frame(width: 50, height: 50)
-            )
+                    .background(
+                        Circle()
+                            .fill(Color.black.opacity(0.3))
+                    )
+            }
         }
         .scaleEffect(buttonScale)
         .opacity(buttonOpacity)

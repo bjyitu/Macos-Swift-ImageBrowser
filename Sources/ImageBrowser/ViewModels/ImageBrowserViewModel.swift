@@ -128,19 +128,31 @@ class ImageBrowserViewModel: ObservableObject {
         if imageItem.thumbnailData != nil { return }
         
         do {
+            // 获取图片原始尺寸以计算最佳缩图尺寸
+            let originalSize = try await getImageSize(from: imageItem.url)
+            
+            // 根据图片宽高比和布局需求动态计算缩图尺寸
+            let maxPixelSize = calculateOptimalThumbnailSize(originalSize: originalSize)
+            
             // 使用ImageIO框架高效生成缩略图数据
-            let thumbnailData = try await generateThumbnailData(from: imageItem.url, maxPixelSize: 300)
+            let thumbnailData = try await generateThumbnailData(from: imageItem.url, maxPixelSize: maxPixelSize)
             
             // 在主线程更新缩略图数据
             await MainActor.run {
                 imageItem.thumbnailData = thumbnailData
+                imageItem.thumbnailSize = CGSize(width: maxPixelSize, height: maxPixelSize)
             }
         } catch {
-            // 如果生成缩略图失败，设置一个占位图数据
-            await MainActor.run {
-                if let placeholderData = createPlaceholderImageData() {
-                    imageItem.thumbnailData = placeholderData
+            // 如果生成缩略图失败，使用默认尺寸
+            do {
+                let thumbnailData = try await generateThumbnailData(from: imageItem.url, maxPixelSize: 300)
+                await MainActor.run {
+                    imageItem.thumbnailData = thumbnailData
+                    imageItem.thumbnailSize = CGSize(width: 300, height: 300)
                 }
+            } catch {
+                // 如果生成缩略图失败，不设置任何数据，由View处理占位符显示
+                print("缩略图加载失败: \(imageItem.name)")
             }
         }
     }
@@ -174,34 +186,48 @@ class ImageBrowserViewModel: ObservableObject {
         }
     }
     
-    /// 创建占位图数据
-    private func createPlaceholderImageData() -> Data? {
-        let size = NSSize(width: 200, height: 200)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        NSColor.gray.setFill()
-        NSRect(origin: .zero, size: size).fill()
-        image.unlockFocus()
-        
-        // 将NSImage转换为JPEG数据
-        guard let tiffData = image.tiffRepresentation,
-              let bitmapRep = NSBitmapImageRep(data: tiffData) else {
-            return nil
+    /// 获取图片原始尺寸
+    private func getImageSize(from url: URL) async throws -> CGSize {
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+                    continuation.resume(throwing: NSError(domain: "ImageBrowser", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法创建图片源"]))
+                    return
+                }
+                
+                guard let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any] else {
+                    continuation.resume(throwing: NSError(domain: "ImageBrowser", code: 4, userInfo: [NSLocalizedDescriptionKey: "无法获取图片属性"]))
+                    return
+                }
+                
+                if let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+                   let height = properties[kCGImagePropertyPixelHeight] as? CGFloat {
+                    continuation.resume(returning: CGSize(width: width, height: height))
+                } else {
+                    continuation.resume(throwing: NSError(domain: "ImageBrowser", code: 5, userInfo: [NSLocalizedDescriptionKey: "无法获取图片尺寸"]))
+                }
+            }
         }
-        
-        return bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
     }
     
-    /// 创建占位图（兼容性方法）
-    private func createPlaceholderImage() -> NSImage {
-        let size = NSSize(width: 200, height: 200)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        NSColor.gray.setFill()
-        NSRect(origin: .zero, size: size).fill()
-        image.unlockFocus()
-        return image
+    /// 根据图片宽高比和布局需求计算最佳缩图尺寸
+    private func calculateOptimalThumbnailSize(originalSize: CGSize) -> CGFloat {
+        let aspectRatio = originalSize.width / originalSize.height
+        
+        // 布局算法约束高度在240-320px范围
+        // 根据宽高比动态调整缩图尺寸，减少缩放比例
+        if aspectRatio > 1.5 { // 横向图片（宽高比大于1.5）
+            // 横向图片：优先保证宽度，减少高度缩放
+            return 480 // 适合布局高度240px (480×240)
+        } else if aspectRatio < 0.67 { // 纵向图片（宽高比小于0.67）
+            // 纵向图片：优先保证高度，减少宽度缩放
+            return 320 // 适合布局宽度约214px (214×320)
+        } else { // 接近方形的图片
+            // 方形图片：使用中等尺寸
+            return 350 // 适合布局尺寸约280-320px
+        }
     }
+    
     
     private func isImageFile(_ url: URL) -> Bool {
         let imageExtensions = ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp"]

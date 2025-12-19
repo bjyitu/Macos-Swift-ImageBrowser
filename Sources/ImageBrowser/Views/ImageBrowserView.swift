@@ -16,92 +16,13 @@ struct ImageBrowserView: View {
     var body: some View {
         VStack(spacing: 0) {
             if viewModel.isLoading {
-                ProgressView("加载中...")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                loadingView
             } else if let errorMessage = viewModel.errorMessage {
-                VStack {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundColor(.orange)
-                    Text(errorMessage)
-                        .multilineTextAlignment(.center)
-                        .padding()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                errorView(message: errorMessage)
             } else if appState.images.isEmpty {
-                Text("没有找到图片")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                emptyView
             } else {
-                ScrollViewReader { proxy in
-                    GeometryReader { geometry in
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 10) {
-                                // 将所有图片作为一个目录组处理
-                                let directoryGroup = DirectoryGroup(name: "Images", images: appState.images)
-                                let rows = layoutCalculator.getFixedGridRows(
-                                    for: directoryGroup,
-                                    availableWidth: geometry.size.width,
-                                    hasReceivedGeometry: hasReceivedGeometry
-                                )
-                                
-                                ForEach(rows, id: \.images.first?.id) { row in
-                                    HStack(alignment: .top, spacing: 10) {
-                                        ForEach(Array(row.images.enumerated()), id: \.element.id) { index, imageItem in
-                                            ImageItemView(
-                                                imageItem: imageItem,
-                                                size: row.imageSizes[index],
-                                                isSelected: browserWindowState.selectedImageID == imageItem.id,
-                                                onSelectionChange: { isSelected in
-                                                    if isSelected {
-                                                        browserWindowState.selectedImageID = imageItem.id
-                                                        // 发送通知，只通知选中状态变化
-                                                        NotificationCenter.default.post(name: .imageSelectionChanged, object: imageItem.id)
-                                                    }
-                                                },
-                                                onDoubleTap: {
-                                                    AppState.shared.showDetailWindow(with: imageItem)
-                                                }
-                                            )
-                                            .id(imageItem.id)
-                                        }
-                                        
-                                        Spacer(minLength: 0)
-                                    }
-                                }
-                            }
-                            .drawingGroup()
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 10)
-                        }
-                        .onAppear {
-                            hasReceivedGeometry = true
-                        }
-                        .onChange(of: geometry.size) { _ in
-                            hasReceivedGeometry = true
-                        }
-                    }
-                    .onAppear {
-                        // if let selectedID = browserWindowState.selectedImageID {
-                        //     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        //         withAnimation(.easeOut(duration: 0.2)) {
-                        //             proxy.scrollTo(selectedID, anchor: UnitPoint.center)
-                        //         }
-                        //     }
-                        // }
-                    }
-                    .onChange(of: browserWindowState.selectedImageID) { selectedID in
-                        if let selectedID = selectedID {
-                            // 发送通知，通知所有ImageItemView更新选中状态
-                            NotificationCenter.default.post(name: .imageSelectionChanged, object: selectedID)
-                            
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                withAnimation(.easeOut(duration: 0.2)) {
-                                    proxy.scrollTo(selectedID, anchor: UnitPoint.center)
-                                }
-                            }
-                        }
-                    }
-                }
+                imageGridView
             }
         }
         .navigationTitle(viewModel.images.isEmpty ? "图片浏览器" : "共 \(viewModel.images.count) 张图片")
@@ -132,6 +53,40 @@ struct ImageBrowserView: View {
                 if let selectedID = browserWindowState.selectedImageID,
                    let selectedImage = appState.images.first(where: { $0.id == selectedID }) {
                     NSWorkspace.shared.selectFile(selectedImage.url.path, inFileViewerRootedAtPath: "")
+                }
+            },
+            onLeftArrow: {
+                // 左箭头键：选择上一张图片
+                guard !appState.images.isEmpty else { return }
+                
+                if let selectedID = browserWindowState.selectedImageID,
+                   let currentIndex = appState.images.firstIndex(where: { $0.id == selectedID }) {
+                    // 不再循环，如果已经是第一张图片则不处理
+                    if currentIndex > 0 {
+                        let previousIndex = currentIndex - 1
+                        let previousImage = appState.images[previousIndex]
+                        browserWindowState.selectedImageID = previousImage.id
+                    }
+                } else if let firstImage = appState.images.first {
+                    // 如果没有选中的图片，选择第一张图片
+                    browserWindowState.selectedImageID = firstImage.id
+                }
+            },
+            onRightArrow: {
+                // 右箭头键：选择下一张图片
+                guard !appState.images.isEmpty else { return }
+                
+                if let selectedID = browserWindowState.selectedImageID,
+                   let currentIndex = appState.images.firstIndex(where: { $0.id == selectedID }) {
+                    // 不再循环，如果已经是最后一张图片则不处理
+                    if currentIndex < appState.images.count - 1 {
+                        let nextIndex = currentIndex + 1
+                        let nextImage = appState.images[nextIndex]
+                        browserWindowState.selectedImageID = nextImage.id
+                    }
+                } else if let firstImage = appState.images.first {
+                    // 如果没有选中的图片，选择第一张图片
+                    browserWindowState.selectedImageID = firstImage.id
                 }
             }
         ))
@@ -232,13 +187,17 @@ struct KeyboardHandler: NSViewRepresentable {
     let onEnter: () -> Void
     let onDelete: () -> Void
     let onBackslash: () -> Void
+    let onLeftArrow: () -> Void
+    let onRightArrow: () -> Void
     
     func makeNSView(context: Context) -> NSView {
         let view = BrowserKeyboardView()
         view.setupActions(
             onEnter: onEnter,
             onDelete: onDelete,
-            onBackslash: onBackslash
+            onBackslash: onBackslash,
+            onLeftArrow: onLeftArrow,
+            onRightArrow: onRightArrow
         )
         
         // 使视图成为第一响应者
@@ -258,15 +217,21 @@ class BrowserKeyboardView: NSView {
     var onEnter: (() -> Void)?
     var onDelete: (() -> Void)?
     var onBackslash: (() -> Void)?
+    var onLeftArrow: (() -> Void)?
+    var onRightArrow: (() -> Void)?
     
     func setupActions(
         onEnter: @escaping () -> Void,
         onDelete: @escaping () -> Void,
-        onBackslash: @escaping () -> Void
+        onBackslash: @escaping () -> Void,
+        onLeftArrow: @escaping () -> Void,
+        onRightArrow: @escaping () -> Void
     ) {
         self.onEnter = onEnter
         self.onDelete = onDelete
         self.onBackslash = onBackslash
+        self.onLeftArrow = onLeftArrow
+        self.onRightArrow = onRightArrow
     }
     
     override var acceptsFirstResponder: Bool {
@@ -289,6 +254,10 @@ class BrowserKeyboardView: NSView {
             onDelete?()
         case 42: // 反斜杠键
             onBackslash?()
+        case 123: // 左箭头键
+            onLeftArrow?()
+        case 124: // 右箭头键
+            onRightArrow?()
         default:
             // 其他按键不处理
             super.keyDown(with: event)
@@ -296,17 +265,24 @@ class BrowserKeyboardView: NSView {
     }
 }
 
-struct ImageItemView: View {
+struct ImageItemView: View, Equatable {
     @ObservedObject var imageItem: ImageItem
     let size: CGSize
-    @State private var isSelected: Bool = false
+    let isSelected: Bool // 改为 let 常量，从父组件传递
     private let onSelectionChange: (Bool) -> Void
     private let onDoubleTap: () -> Void
+    
+    // 实现 Equatable 协议，只比较关键属性
+    static func == (lhs: ImageItemView, rhs: ImageItemView) -> Bool {
+        lhs.imageItem.id == rhs.imageItem.id && 
+        lhs.isSelected == rhs.isSelected &&
+        lhs.size == rhs.size
+    }
     
     init(imageItem: ImageItem, size: CGSize, isSelected: Bool, onSelectionChange: @escaping (Bool) -> Void, onDoubleTap: @escaping () -> Void) {
         self.imageItem = imageItem
         self.size = size
-        self._isSelected = State(initialValue: isSelected)
+        self.isSelected = isSelected
         self.onSelectionChange = onSelectionChange
         self.onDoubleTap = onDoubleTap
     }
@@ -329,10 +305,10 @@ struct ImageItemView: View {
         }
         .frame(width: size.width, height: size.height)
         .clipped()
-        .cornerRadius(8)
+        .cornerRadius(4)
         .contentShape(Rectangle())
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 4)
                 .inset(by: 2)
                 .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 4)
         )
@@ -340,7 +316,6 @@ struct ImageItemView: View {
             TapGesture(count: 1)
                 .onEnded { _ in
                     if !isSelected {
-                        isSelected = true
                         onSelectionChange(true)
                     }
                 }
@@ -351,14 +326,126 @@ struct ImageItemView: View {
                     onDoubleTap()
                 }
         )
-        .onReceive(NotificationCenter.default.publisher(for: .imageSelectionChanged)) { notification in
-            if let selectedID = notification.object as? UUID {
-                let shouldBeSelected = (selectedID == imageItem.id)
-                if isSelected != shouldBeSelected {
-                    isSelected = shouldBeSelected
+        .onDrag {
+            // 拖拽功能：提供文件URL
+            NSItemProvider(item: imageItem.url as NSURL, typeIdentifier: "public.file-url")
+        }
+    }
+}
+
+// MARK: - 提取的视图方法
+private extension ImageBrowserView {
+    
+    var loadingView: some View {
+        ProgressView("加载中...")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    func errorView(message: String) -> some View {
+        VStack {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.largeTitle)
+                .foregroundColor(.orange)
+            Text(message)
+                .multilineTextAlignment(.center)
+                .padding()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    var emptyView: some View {
+        Text("没有找到图片")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    var imageGridView: some View {
+        ImageGridView(
+            appState: appState,
+            browserWindowState: browserWindowState,
+            layoutCalculator: layoutCalculator,
+            hasReceivedGeometry: $hasReceivedGeometry
+        )
+    }
+}
+
+// MARK: - ImageGridView 独立组件
+struct ImageGridView: View {
+    @ObservedObject var appState: AppState
+    @ObservedObject var browserWindowState: BrowserWindowState
+    let layoutCalculator: LayoutCalculatorOpt
+    @Binding var hasReceivedGeometry: Bool
+    
+    var body: some View {
+        ScrollViewReader { proxy in
+            GeometryReader { geometry in
+                ScrollView {
+                    imageGridContent(geometry: geometry)
+                        .drawingGroup()
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 10)
+                }
+                .onAppear {
+                    hasReceivedGeometry = true
+                }
+                .onChange(of: geometry.size) { _ in
+                    hasReceivedGeometry = true
+                }
+            }
+            .onChange(of: browserWindowState.selectedImageID) { selectedID in
+                if let selectedID = selectedID {
+                    // 不再发送全局通知，直接使用 SwiftUI 的状态管理
+                    
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        withAnimation(.linear(duration: 0.3)) {
+                            proxy.scrollTo(selectedID, anchor: UnitPoint.center)
+                        }
+                    }
                 }
             }
         }
+    }
+    
+    private func imageGridContent(geometry: GeometryProxy) -> some View {
+        LazyVStack(alignment: .leading, spacing: 10) {
+            // 将所有图片作为一个目录组处理
+            let directoryGroup = DirectoryGroup(name: "Images", images: appState.images)
+            let rows = layoutCalculator.getFixedGridRows(
+                for: directoryGroup,
+                availableWidth: geometry.size.width,
+                hasReceivedGeometry: hasReceivedGeometry
+            )
+            
+            ForEach(rows, id: \.images.first?.id) { row in
+                imageRow(row: row)
+            }
+        }
+    }
+    
+    private func imageRow(row: FixedGridRow) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            ForEach(Array(row.images.enumerated()), id: \.element.id) { index, imageItem in
+                imageItemView(row: row, index: index, imageItem: imageItem)
+            }
+            
+            Spacer(minLength: 0)
+        }
+    }
+    
+    private func imageItemView(row: FixedGridRow, index: Int, imageItem: ImageItem) -> some View {
+        ImageItemView(
+            imageItem: imageItem,
+            size: row.imageSizes[index],
+            isSelected: browserWindowState.selectedImageID == imageItem.id,
+            onSelectionChange: { isSelected in
+                if isSelected {
+                    browserWindowState.selectedImageID = imageItem.id
+                }
+            },
+            onDoubleTap: {
+                AppState.shared.showDetailWindow(with: imageItem)
+            }
+        )
+        .id(imageItem.id)
     }
 }
 

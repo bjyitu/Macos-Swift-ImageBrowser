@@ -177,7 +177,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         // 延迟显示启动窗口，给application(_:open:)方法处理时间
         // 如果应用是通过Open With启动的，application(_:open:)会在稍后被调用
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
             // 检查是否有窗口已经显示
             let visibleWindows = NSApplication.shared.windows.filter { $0.isVisible }
             if visibleWindows.isEmpty {
@@ -411,8 +411,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     func openDetailWindow(with imageItem: ImageItem) {
-        print("Opening detail window using AppKit")
-        
         // 隐藏其他窗口
         hideAllWindows()
         
@@ -420,20 +418,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let contentView = ImageDetailView(imageItem: imageItem)
         let hostingController = NSHostingController(rootView: contentView)
         
-        // 获取图片尺寸
-        let imageSize = getImageSize(from: imageItem)
-        
-        // 获取屏幕尺寸
-        guard let screen = NSScreen.main else { return }
-        let screenWidth = screen.visibleFrame.size.width
-        let screenHeight = screen.visibleFrame.size.height
-        
-        // 计算窗口大小
-        let windowWidth = min(imageSize.width, screenWidth * 0.95)
-        let windowHeight = min(imageSize.height, screenHeight * 0.95)
-        
+        // 使用固定尺寸，让ImageDetailView的缩放逻辑负责调整窗口大小
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight),
+            contentRect: NSRect(x: 0, y: 0, width: 1024, height: 600),
             styleMask: [.titled,.fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -441,38 +428,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         window.title = "\(imageItem.name)"
         window.titlebarAppearsTransparent = true
-        // window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .none
         window.contentViewController = hostingController
         window.center()
         window.makeKeyAndOrderFront(nil)
         
+        // 确保窗口成为键窗口，这对于回车键触发的窗口特别重要
+        DispatchQueue.main.async {
+            window.makeKeyAndOrderFront(nil)
+        }
+        
         // 启用窗口背景拖拽功能
         window.isMovableByWindowBackground = true
         
         detailWindow = window
-    }
-    
-    func getImageSize(from imageItem: ImageItem) -> CGSize {
-        // 尝试从图片文件获取尺寸
-        if let imageSource = CGImageSourceCreateWithURL(imageItem.url as CFURL, nil),
-           let imageProperties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any],
-           let width = imageProperties[kCGImagePropertyPixelWidth as String] as? CGFloat,
-           let height = imageProperties[kCGImagePropertyPixelHeight as String] as? CGFloat {
-            
-            // 获取DPI信息，如果没有则默认为72（标准屏幕DPI）
-            let dpiWidth = imageProperties[kCGImagePropertyDPIWidth as String] as? CGFloat ?? 72.0
-            let dpiHeight = imageProperties[kCGImagePropertyDPIHeight as String] as? CGFloat ?? 72.0
-            
-            // 计算逻辑尺寸（点尺寸），考虑DPI缩放
-            let logicalWidth = width / (dpiWidth / 72.0)
-            let logicalHeight = height / (dpiHeight / 72.0)
-            
-            return CGSize(width: logicalWidth, height: logicalHeight)
-        }
-        
-        // 如果无法获取尺寸，返回默认值
-        return CGSize(width: 1024, height: 600)
     }
     
     func openLaunchWindow() {
@@ -492,7 +461,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     private func hideAllWindows() {
-        print("Hiding all windows")
         for window in NSApplication.shared.windows {
             window.orderOut(nil)
         }

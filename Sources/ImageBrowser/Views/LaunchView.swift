@@ -8,11 +8,15 @@ struct LaunchView: View {
     var body: some View {
         VStack {
             Spacer()
-            VStack(spacing: 20) {
+            VStack(spacing: 5) {
                 Image(systemName: "photo.fill.on.rectangle.fill")
-                    .font(.system(size: 60))
+                    .font(.system(size: 40))
                     .foregroundColor(isHovering || isDropTarget ? .blue : .gray)
                     .padding(.bottom, 10)
+                Text("点击加载图片或目录")
+                    .font(.title2)
+                    .foregroundColor(.secondary)
+                    .opacity(0.7)
                 Text("或拖拽图片文件到此窗口")
                     .font(.callout)
                     .foregroundColor(.secondary)

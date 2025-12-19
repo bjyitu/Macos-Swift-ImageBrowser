@@ -7,18 +7,15 @@ class ImageDetailViewModel: ObservableObject {
     @Published var fullImage: NSImage?
     
     // 锐化参数
-    private let sharpenIntensity: Double = 1.5
-    private let sharpenRadius: Double = 0.5
-    
-    // 后台处理队列
-    private let processingQueue = DispatchQueue(label: "com.imagebrowser.detail.processing", qos: .userInitiated)
+    private let sharpenIntensity: Double = 1
+    private let sharpenRadius: Double = 1
     
     // 图片缓存系统
-    private let imageCache = NSCache<NSString, NSImage>()
+    let imageCache = NSCache<NSString, NSImage>()
     private let cacheQueue = DispatchQueue(label: "com.imagebrowser.detail.cache", qos: .utility)
     
     // 预加载参数
-    private let preloadCount = 10 // 预加载前后各20张图片
+    private let preloadCount = 5 // 预加载前后各5张图片
     
     init() {
         // 初始化处理队列
@@ -43,79 +40,44 @@ class ImageDetailViewModel: ObservableObject {
         // 首先尝试从缓存获取图片
         let cacheKey = imageItem.url.absoluteString as NSString
         if let cachedImage = imageCache.object(forKey: cacheKey) {
-            DispatchQueue.main.async {
-                self.fullImage = cachedImage
-                
-                // 只在明确要求时调整窗口大小
-                if shouldAdjustWindow {
-                    // 通知View调整窗口大小
-                    let windowSize = self.calculateWindowSizeForImage(originalSize: cachedImage.size)
-                    NotificationCenter.default.post(
-                        name: .adjustWindowSize,
-                        object: nil,
-                        userInfo: [
-                            "windowSize": windowSize,
-                            "imageItem": imageItem
-                        ]
-                    )
-                }
-            }
-            
+            // 缓存命中：立即更新UI，无需异步延迟
+            self.fullImage = cachedImage
             // 预加载相邻图片
             preloadAdjacentImages(for: imageItem)
             return
         }
         
-        // 在后台队列执行图片处理
-        processingQueue.async { [weak self] in
-            guard let self = self else { return }
+        // 缓存未命中：立即开始同步处理图片，优先保证用户滚动体验
+        do {
+            // 第一步：直接使用imageItem中的尺寸信息
+            let originalSize = imageItem.size
             
-            do {
-                // 第一步：加载图片数据并获取原始尺寸
-                let imageData = try self.loadImageDataSynchronously(from: imageItem.url)
-                guard let originalSize = self.getOriginalImageSize(from: imageData) else {
-                    throw NSError(domain: "ImageLoader", code: -2, userInfo: [NSLocalizedDescriptionKey: "无法获取图片尺寸"])
+            // 第二步：只有在需要调整窗口时才计算窗口大小
+            let windowSize = shouldAdjustWindow ? self.calculateWindowSizeForImage(originalSize: originalSize) : nil
+            
+            // 第三步：一次性加载数据并创建优化图片
+            let imageData = try self.loadImageDataSynchronously(from: imageItem.url)
+            if let finalImage = self.createOptimizedImage(from: imageData, targetSize: windowSize) {
+                // 将图片存入缓存
+                let imageSize = finalImage.size.width * finalImage.size.height * 4 // 估算像素内存占用
+                self.imageCache.setObject(finalImage, forKey: cacheKey, cost: Int(imageSize))
+                
+                // 立即更新UI，无需异步
+                if self.imageItem?.url == imageItem.url {
+                    self.fullImage = finalImage
                 }
                 
-                // 第二步：根据图片尺寸计算合适的窗口大小
-                let windowSize = self.calculateWindowSizeForImage(originalSize: originalSize)
-                
-                // 第三步：创建优化图片
-                if let finalImage = self.createOptimizedImage(from: imageData, targetSize: windowSize) {
-                    // 将图片存入缓存
-                    let imageSize = finalImage.size.width * finalImage.size.height * 4 // 估算像素内存占用
-                    self.imageCache.setObject(finalImage, forKey: cacheKey, cost: Int(imageSize))
-                    
-                    // 在主线程更新UI
-                    DispatchQueue.main.async {
-                        self.fullImage = finalImage
-                        
-                        // 只在明确要求时调整窗口大小
-                        if shouldAdjustWindow {
-                            // 通知View调整窗口大小
-                            NotificationCenter.default.post(
-                                name: .adjustWindowSize,
-                                object: nil,
-                                userInfo: [
-                                    "windowSize": windowSize,
-                                    "imageItem": imageItem
-                                ]
-                            )
-                        }
-                    }
-                    
-                    // 预加载相邻图片
-                    self.preloadAdjacentImages(for: imageItem)
-                } else {
-                    DispatchQueue.main.async {
-                        self.fullImage = nil
-                    }
-                }
-                
-            } catch {
-                DispatchQueue.main.async {
+                // 预加载相邻图片
+                self.preloadAdjacentImages(for: imageItem)
+            } else {
+                if self.imageItem?.url == imageItem.url {
                     self.fullImage = nil
                 }
+            }
+            
+        } catch {
+            if self.imageItem?.url == imageItem.url {
+                self.fullImage = nil
             }
         }
     }
@@ -133,46 +95,39 @@ class ImageDetailViewModel: ObservableObject {
     
     // 预加载相邻图片
     private func preloadAdjacentImages(for currentItem: ImageItem) {
-        cacheQueue.async { [weak self] in
-            guard let self = self else { return }
-            
-            // 获取当前图片在列表中的索引
-            guard let currentIndex = AppState.shared.images.firstIndex(of: currentItem) else {
-                return
-            }
-            
-            // 计算预加载范围
-            let startIndex = max(0, currentIndex - self.preloadCount)
-            let endIndex = min(AppState.shared.images.count - 1, currentIndex + self.preloadCount)
-            
-            // 预加载范围内的图片
-            for i in startIndex...endIndex {
-                // 跳过当前图片
-                if i == currentIndex { continue }
+        // 获取当前图片在列表中的索引
+        guard let currentIndex = AppState.shared.images.firstIndex(of: currentItem) else {
+            return
+        }
+        
+        // 计算预加载范围
+        let startIndex = max(0, currentIndex - self.preloadCount)
+        let endIndex = min(AppState.shared.images.count - 1, currentIndex + self.preloadCount)
+        
+        // 批量预加载图片
+        let preloadItems = (startIndex...endIndex)
+            .filter { $0 != currentIndex }
+            .map { AppState.shared.images[$0] }
+            .filter { self.imageCache.object(forKey: $0.url.absoluteString as NSString) == nil }
+        
+        // 同步预加载，优先保证当前图片的响应速度
+        for imageItem in preloadItems {
+            do {
+                // 直接使用imageItem中的尺寸信息
+                let originalSize = imageItem.size
+                let windowSize = self.calculateWindowSizeForImage(originalSize: originalSize)
                 
-                let imageItem = AppState.shared.images[i]
-                let cacheKey = imageItem.url.absoluteString as NSString
-                
-                // 检查是否已缓存
-                if self.imageCache.object(forKey: cacheKey) == nil {
-                    // 异步加载并缓存图片
-                    self.processingQueue.async {
-                        do {
-                            let imageData = try self.loadImageDataSynchronously(from: imageItem.url)
-                            guard let originalSize = self.getOriginalImageSize(from: imageData) else { return }
-                            
-                            let windowSize = self.calculateWindowSizeForImage(originalSize: originalSize)
-                            if let optimizedImage = self.createOptimizedImage(from: imageData, targetSize: windowSize) {
-                                // 存入缓存
-                                let imageSize = optimizedImage.size.width * optimizedImage.size.height * 4
-                                self.imageCache.setObject(optimizedImage, forKey: cacheKey, cost: Int(imageSize))
-                            }
-                        } catch {
-                            // 预加载失败，忽略错误
-                            print("预加载图片失败: \(imageItem.url.lastPathComponent)")
-                        }
-                    }
+                // 使用优化的数据加载和图片处理
+                let imageData = try self.loadImageDataSynchronously(from: imageItem.url)
+                if let optimizedImage = self.createOptimizedImage(from: imageData, targetSize: windowSize) {
+                    // 存入缓存
+                    let imageSize = optimizedImage.size.width * optimizedImage.size.height * 4
+                    let cacheKey = imageItem.url.absoluteString as NSString
+                    self.imageCache.setObject(optimizedImage, forKey: cacheKey, cost: Int(imageSize))
                 }
+            } catch {
+                // 预加载失败，忽略错误
+                print("预加载图片失败: \(imageItem.url.lastPathComponent)")
             }
         }
     }
@@ -213,73 +168,68 @@ class ImageDetailViewModel: ObservableObject {
     
     // 从Data创建优化图片的辅助方法
     private func createOptimizedImage(from data: Data, targetSize: CGSize? = nil) -> NSImage? {
-        // 使用NSImage初始化
-        guard let nsImage = NSImage(data: data) else {
+        // 使用CGImageSource直接处理数据，避免多次创建NSImage
+        guard let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+            // 如果CGImageSource失败，直接打印错误日志
+            print("CGImageSource处理失败，无法创建优化图片")
             return nil
         }
         
-        // 获取原始尺寸
-        let originalSize = nsImage.size
-        let width = Int(originalSize.width)
-        let height = Int(originalSize.height)
+        // 获取原始尺寸信息
+        let originalWidth = CGFloat(image.width)
+        let originalHeight = CGFloat(image.height)
+        let originalSize = CGSize(width: originalWidth, height: originalHeight)
         
         // 使用提供的targetSize，如果没有则使用默认大小
-        let windowSize = targetSize ?? CGSize(width: 1024, height: 768)
+        let windowSize = targetSize ?? CGSize(width: 768, height: 768)
         let maxWindowDimension = max(windowSize.width, windowSize.height)
         
         // 根据窗口大小计算缩放后的尺寸
-        let imageMaxDimension = max(CGFloat(width), CGFloat(height))
+        let imageMaxDimension = max(originalWidth, originalHeight)
         let scale = maxWindowDimension / imageMaxDimension
         
         // 如果图片小于目标尺寸，不需要缩放
         if scale >= 1.0 {
+            let nsImage = NSImage(cgImage: image, size: originalSize)
             return nsImage.sharpened(intensity: self.sharpenIntensity, radius: self.sharpenRadius) ?? nsImage
         }
         
         // 计算缩放后的尺寸
-        let scaledWidth = Int(CGFloat(width) * scale)
-        let scaledHeight = Int(CGFloat(height) * scale)
+        let scaledWidth = Int(originalWidth * scale)
+        let scaledHeight = Int(originalHeight * scale)
         let scaledSize = NSSize(width: scaledWidth, height: scaledHeight)
         
-        // 创建缩放后的图像
-        guard let resizedImage = resizeImage(nsImage, to: scaledSize) else {
-            return nsImage
-        }
-        
-        // 应用锐化滤镜
-        return resizedImage.sharpened(intensity: self.sharpenIntensity, radius: self.sharpenRadius) ?? resizedImage
-    }
-    
-    // 辅助方法：调整图像尺寸
-    private func resizeImage(_ image: NSImage, to size: NSSize) -> NSImage? {
-        let newImage = NSImage(size: size)
-        
-        newImage.lockFocus()
-        let context = NSGraphicsContext.current?.cgContext
-        
-        // 设置高质量插值
-        context?.interpolationQuality = .high
-        
-        // 绘制图像
-        image.draw(in: NSRect(origin: .zero, size: size),
-                   from: NSRect(origin: .zero, size: image.size),
-                   operation: .copy,
-                   fraction: 1.0)
-        
-        newImage.unlockFocus()
-        
-        return newImage.size.width > 0 && newImage.size.height > 0 ? newImage : nil
-    }
-    
-    // 公开方法：获取原始图片尺寸（供View调用）
-    func getOriginalImageSize(from data: Data) -> CGSize? {
-        guard let nsImage = NSImage(data: data) else {
+        // 直接使用CGImage进行缩放，避免中间NSImage转换
+        guard let resizedImage = resizeCGImage(image, to: scaledSize) else {
+            // 缩放失败，直接打印错误日志
+            print("CGImage缩放失败，无法创建优化图片")
             return nil
         }
         
-        return nsImage.size
+        // 转换为NSImage并应用锐化
+        let finalNSImage = NSImage(cgImage: resizedImage, size: scaledSize)
+        return finalNSImage.sharpened(intensity: self.sharpenIntensity, radius: self.sharpenRadius) ?? finalNSImage
     }
     
+    // 直接缩放CGImage的方法
+    private func resizeCGImage(_ cgImage: CGImage, to size: NSSize) -> CGImage? {
+        let width = Int(size.width)
+        let height = Int(size.height)
+        
+        guard let context = CGContext(data: nil,
+                                     width: width,
+                                     height: height,
+                                     bitsPerComponent: 8,
+                                     bytesPerRow: 0,
+                                     space: CGColorSpaceCreateDeviceRGB(),
+                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return nil
+        }
+        
+        context.draw(cgImage, in: CGRect(origin: .zero, size: size))
+        return context.makeImage()
+    }
 
     // 根据图片原始尺寸计算合适的窗口大小
     func calculateWindowSizeForImage(originalSize: CGSize) -> CGSize {
@@ -332,33 +282,25 @@ class ImageDetailViewModel: ObservableObject {
         let screenWidth = screen.visibleFrame.size.width
         let screenHeight = screen.visibleFrame.size.height
         
-        // 直接加载图片数据获取原始尺寸
-        do {
-            let imageData = try Data(contentsOf: imageItem.url)
-            
-            // 获取原始图片尺寸
-            guard let originalSize = getOriginalImageSize(from: imageData) else { return }
-            
-            // 使用新的计算方法
-            let windowSize = calculateWindowSizeForImage(originalSize: originalSize)
-            
-            // 计算居中位置
-            let centerX = screen.visibleFrame.origin.x + (screenWidth - windowSize.width) / 2
-            let centerY = screen.visibleFrame.origin.y + (screenHeight - windowSize.height) / 2
-            
-            // 设置窗口位置和大小
-            let newFrame = NSRect(
-                x: centerX,
-                y: centerY,
-                width: windowSize.width,
-                height: windowSize.height
-            )
-            
-            window.setFrame(newFrame, display: true, animate: true)
-            
-        } catch {
-            print("无法获取原始图片尺寸: \(error)")
-        }
+        // 直接使用imageItem中的尺寸信息
+        let originalSize = imageItem.size
+        
+        // 使用新的计算方法
+        let windowSize = calculateWindowSizeForImage(originalSize: originalSize)
+        
+        // 计算居中位置
+        let centerX = screen.visibleFrame.origin.x + (screenWidth - windowSize.width) / 2
+        let centerY = screen.visibleFrame.origin.y + (screenHeight - windowSize.height) / 2
+        
+        // 设置窗口位置和大小
+        let newFrame = NSRect(
+            x: centerX,
+            y: centerY,
+            width: windowSize.width,
+            height: windowSize.height
+        )
+        
+        window.setFrame(newFrame, display: true, animate: true)
     }
 
 }
