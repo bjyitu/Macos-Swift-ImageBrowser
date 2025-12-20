@@ -105,6 +105,7 @@ extension Notification.Name {
     static let reloadImages = Notification.Name("com.imagebrowser.reloadImages")
     static let adjustWindowSize = Notification.Name("com.imagebrowser.adjustWindowSize")
     static let imageSelectionChanged = Notification.Name("com.imagebrowser.imageSelectionChanged")
+    static let scrollToTop = Notification.Name("com.imagebrowser.scrollToTop")
 }
 
 // 列表窗口状态管理

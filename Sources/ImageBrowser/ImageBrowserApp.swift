@@ -428,9 +428,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         window.title = "\(imageItem.name)"
         window.titlebarAppearsTransparent = true
+        // 设置标题栏背景色为半透明
+        // window.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.5)
         window.titlebarSeparatorStyle = .none
         window.contentViewController = hostingController
         window.center()
+        
+        // 设置窗口层级，确保显示在其他窗口前面
+        window.level = .floating
+        
         window.makeKeyAndOrderFront(nil)
         
         // 确保窗口成为键窗口，这对于回车键触发的窗口特别重要

@@ -76,6 +76,8 @@ struct ImageDetailView: View {
         if currentIndex == AppState.shared.images.count - 1 {
             nextIndex = 0
             print("到底了 = \(currentIndex)")
+            // 循环滚动时，通知列表页返回顶部
+            NotificationCenter.default.post(name: .scrollToTop, object: nil)
         } else {
             nextIndex = currentIndex + 1
         }
@@ -300,10 +302,10 @@ struct ImageDetailView: View {
         .padding(0)
         .scaleEffect(scale)
         .onChange(of: viewModel.imageItem) { _ in
-            scale = 1
+            scale = 1.01
             DispatchQueue.main.asyncAfter(deadline: .now() + AutoPlayConstants.animationDelay) {
                 withAnimation(.easeOut(duration: 0.2)) {
-                    scale = 1.005
+                    scale = 1
                 }
             }
         }

@@ -105,12 +105,12 @@ struct ImageBrowserView: View {
                 viewModel.loadImages(from: folderURL)
             }
         }
-        .onDisappear {
-            // 清理通知监听器
-            if let observer = notificationObserver {
-                NotificationCenter.default.removeObserver(observer)
-            }
-        }
+        // .onDisappear {
+        //     // 清理通知监听器
+        //     if let observer = notificationObserver {
+        //         NotificationCenter.default.removeObserver(observer)
+        //     }
+        // }
     }
     
     private func setupNotificationListeners() {
@@ -268,7 +268,7 @@ class BrowserKeyboardView: NSView {
 struct ImageItemView: View, Equatable {
     @ObservedObject var imageItem: ImageItem
     let size: CGSize
-    let isSelected: Bool // 改为 let 常量，从父组件传递
+    let isSelected: Bool 
     private let onSelectionChange: (Bool) -> Void
     private let onDoubleTap: () -> Void
     
@@ -379,6 +379,11 @@ struct ImageGridView: View {
         ScrollViewReader { proxy in
             GeometryReader { geometry in
                 ScrollView {
+                    // 添加顶部锚点
+                    Color.clear
+                        .frame(height: 1)
+                        .id("TOP_ANCHOR")
+                    
                     imageGridContent(geometry: geometry)
                         .drawingGroup()
                         .padding(.horizontal, 10)
@@ -395,11 +400,17 @@ struct ImageGridView: View {
                 if let selectedID = selectedID {
                     // 不再发送全局通知，直接使用 SwiftUI 的状态管理
                     
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        withAnimation(.linear(duration: 0.3)) {
+                    // DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        withAnimation(.linear(duration: 0.1)) {
                             proxy.scrollTo(selectedID, anchor: UnitPoint.center)
                         }
-                    }
+                    // }
+                }
+            }
+            // 监听返回顶部的事件
+            .onReceive(NotificationCenter.default.publisher(for: .scrollToTop)) { _ in
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo("TOP_ANCHOR", anchor: .top)
                 }
             }
         }
