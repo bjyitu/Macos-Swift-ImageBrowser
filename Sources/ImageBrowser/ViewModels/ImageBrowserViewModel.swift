@@ -106,7 +106,7 @@ class ImageBrowserViewModel: ObservableObject {
         // 简化：直接并发加载缩略图，限制并发数量
         await withTaskGroup(of: Void.self) { group in
             var activeTasks = 0
-            let maxConcurrentTasks = 10
+            let maxConcurrentTasks = 20
             
             for imageItem in imageItems {
                 // 限制并发任务数量，避免内存爆炸
