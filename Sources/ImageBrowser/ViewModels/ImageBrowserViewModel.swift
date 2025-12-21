@@ -12,7 +12,7 @@ class ImageBrowserViewModel: ObservableObject {
     
     // 分批加载相关属性
     private var allImageItems: [ImageItem] = []
-    private var batchSize = 100 // 每批加载100张图片
+    private var batchSize = 200 // 每批加载200张图片
     private var currentBatchIndex = 0
     private var isBatchLoading = false
     private var batchLoadingTask: Task<Void, Never>?
@@ -106,7 +106,7 @@ class ImageBrowserViewModel: ObservableObject {
         // 简化：直接并发加载缩略图，限制并发数量
         await withTaskGroup(of: Void.self) { group in
             var activeTasks = 0
-            let maxConcurrentTasks = 20
+            let maxConcurrentTasks = 10
             
             for imageItem in imageItems {
                 // 限制并发任务数量，避免内存爆炸
