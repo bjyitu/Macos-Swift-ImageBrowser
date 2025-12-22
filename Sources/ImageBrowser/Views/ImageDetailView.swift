@@ -67,6 +67,11 @@ struct ImageDetailView: View {
             togglePlayPause()
         }
         
+        // 如果是自动播放模式，立即重置进度，避免闪现
+        if !stopPlayback {
+            progress = 0.0
+        }
+        
         guard let currentImageItem = viewModel.imageItem,
               let currentIndex = AppState.shared.images.firstIndex(of: currentImageItem),
               !AppState.shared.images.isEmpty else { return }
@@ -77,7 +82,7 @@ struct ImageDetailView: View {
             nextIndex = 0
             print("到底了 = \(currentIndex)")
             // 循环滚动时，通知列表页返回顶部
-            NotificationCenter.default.post(name: .scrollToTop, object: nil)
+            NotificationManager.shared.post(name: .scrollToTop)
         } else {
             nextIndex = currentIndex + 1
         }
@@ -112,7 +117,7 @@ struct ImageDetailView: View {
     // 开始自动播放
     private func startAutoPlay() {
         // 重置进度
-        progress = 0.0
+        progress = 0
         
         // 使用一个计时器同时处理进度更新和图片切换
         autoPlayTimer = Timer.scheduledTimer(withTimeInterval: AutoPlayConstants.progressUpdateInterval, repeats: true) { _ in
@@ -150,9 +155,8 @@ struct ImageDetailView: View {
         }
         
         // 显示列表窗口但不重新加载图片
-        NotificationCenter.default.post(
+        NotificationManager.shared.post(
             name: .openBrowserWindow,
-            object: nil,
             userInfo: ["shouldReloadImages": false]
         )
     }
@@ -355,7 +359,7 @@ struct ImageDetailView: View {
             // 调用switchToBrowserView方法，确保停止自动播放
             switchToBrowserView()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .scrollWheel)) { notification in
+        .onReceive(NotificationManager.shared.publisher(for: .scrollWheel)) { notification in
             // 处理鼠标滚轮事件
             if let event = notification.object as? NSEvent {
                 // 如果正在播放，滚轮操作暂停播放
@@ -431,14 +435,19 @@ struct PlayPauseButton: View {
         ZStack {
             // 背景圆圈进度条
             Circle()
-                .stroke(Color.black.opacity(0.3), lineWidth: 2)
+                .stroke(Color.black.opacity(0.2), lineWidth: 2)
                 .frame(width: 50, height: 50)
             
             // 进度圆圈
             Circle()
-                .trim(from: 0, to: isPlaying ? progress : 0)
+                .trim(from: 0.05, to: isPlaying ? progress : 0)
                 .stroke(
-                    Color.white,
+                    AngularGradient(
+                        gradient: Gradient(colors: [.white.opacity(0.0), .white.opacity(1.0)]),
+                        center: .center,
+                        startAngle: .degrees(0),
+                        endAngle: .degrees(360)
+                    ),
                     style: StrokeStyle(
                         lineWidth: 2,
                         lineCap: .round

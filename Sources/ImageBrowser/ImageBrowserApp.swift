@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import UniformTypeIdentifiers
+import AppKit
 
 @main
 @available(macOS 12.0, *)
@@ -46,14 +47,14 @@ struct ImageBrowserApp: App {
         print("Setting up notification listeners in ImageBrowserApp")
         
         // 监听打开文件夹选择对话框的通知
-        NotificationCenter.default.publisher(for: .openImageFolder)
+        NotificationManager.shared.publisher(for: .openImageFolder)
             .sink { _ in
                 print("Received openImageFolder notification")
                 appDelegate.openImageFolder()
             }
             .store(in: &cancellables)
         
-        NotificationCenter.default.publisher(for: .openBrowserWindow)
+        NotificationManager.shared.publisher(for: .openBrowserWindow)
             .sink { notification in
                 print("Opening browser window")
                 // 默认情况下需要重新加载图片，除非明确指定不需要
@@ -63,7 +64,7 @@ struct ImageBrowserApp: App {
             .store(in: &cancellables)
         
         // 监听打开详情窗口的通知
-        NotificationCenter.default.publisher(for: .openDetailWindow)
+        NotificationManager.shared.publisher(for: .openDetailWindow)
             .sink { notification in
                 print("Received openDetailWindow notification")
                 if let userInfo = notification.userInfo,
@@ -81,7 +82,7 @@ struct ImageBrowserApp: App {
             .store(in: &cancellables)
         
         // 监听直接打开图片文件的通知
-        NotificationCenter.default.publisher(for: .openImageFile)
+        NotificationManager.shared.publisher(for: .openImageFile)
             .sink { notification in
                 print("Received openImageFile notification")
                 if let userInfo = notification.userInfo,
@@ -95,7 +96,7 @@ struct ImageBrowserApp: App {
             .store(in: &cancellables)
         
         // 监听显示启动窗口的通知
-        NotificationCenter.default.publisher(for: .showLaunchWindow)
+        NotificationManager.shared.publisher(for: .showLaunchWindow)
             .sink { _ in
                 print("Opening launch window")
                 appDelegate.openLaunchWindow()
@@ -103,7 +104,7 @@ struct ImageBrowserApp: App {
             .store(in: &cancellables)
         
         // 监听更新浏览器窗口标题的通知
-        NotificationCenter.default.publisher(for: .updateBrowserWindowTitle)
+        NotificationManager.shared.publisher(for: .updateBrowserWindowTitle)
             .sink { _ in
                 print("Updating browser window title")
                 appDelegate.updateBrowserWindowTitle()
@@ -142,7 +143,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // 只在详情窗口显示时处理滚轮事件
             if let detailWindow = self.detailWindow, detailWindow.isVisible {
                 // 转发滚轮事件到通知中心
-                NotificationCenter.default.post(name: .scrollWheel, object: event)
+                NotificationManager.shared.post(name: .scrollWheel, object: event)
             }
             return event
         }
@@ -151,7 +152,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let url = NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: keyDirectObject)?.stringValue {
             let fileURL = URL(fileURLWithPath: url)
             print("Found file URL in AppleEvent: \(fileURL.path)")
-            if isImageFile(fileURL) {
+            if ImageLoaderService.shared.isImageFile(fileURL) {
                 openImageFile(fileURL)
                 return
             }
@@ -167,7 +168,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let fileURL = URL(fileURLWithPath: arg)
                 print("Processing command line argument: \(arg)")
                 
-                if isImageFile(fileURL) {
+                if ImageLoaderService.shared.isImageFile(fileURL) {
                     print("Opening image file from command line: \(fileURL.path)")
                     openImageFile(fileURL)
                     return
@@ -213,7 +214,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             
             switch fileType {
             case .file:
-                if self.isImageFile(url) {
+                if ImageLoaderService.shared.isImageFile(url) {
                     print("Opening image file: \(url.path)")
                     self.openImageFileWithRetry(url, attempt: 0)
                     return
@@ -221,7 +222,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case .directory:
                 print("Opening folder: \(url.path)")
                 self.loadImagesFromFolder(url)
-                self.openBrowserWindow()
+                self.openBrowserWindow(shouldReloadImages: false)
                 return
             case .unknown:
                 print("Unknown file type: \(url.path)")
@@ -337,7 +338,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             let url = URL(fileURLWithPath: filePath)
                             print("Processing file: \(filePath)")
                             
-                            if isImageFile(url) {
+                            if ImageLoaderService.shared.isImageFile(url) {
                                 openImageFile(url)
                                 break // 只处理第一个图片文件
                             }
@@ -348,7 +349,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     print("Single file: \(filePath)")
                     let url = URL(fileURLWithPath: filePath)
                     
-                    if isImageFile(url) {
+                    if ImageLoaderService.shared.isImageFile(url) {
                         openImageFile(url)
                     }
                 }
@@ -395,7 +396,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // 只有在需要重新加载图片时才发送通知
             if shouldReloadImages, let folderURL = AppState.shared.selectedFolderURL {
                 // 发送通知让ImageBrowserView重新加载图片
-                NotificationCenter.default.post(name: .reloadImages, object: nil, userInfo: ["folderURL": folderURL])
+                NotificationManager.shared.post(name: .reloadImages, userInfo: ["folderURL": folderURL])
             }
         }
     }
@@ -477,7 +478,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         print("Opening image file: \(fileURL.path)")
         
         // 检查是否为图片文件
-        guard isImageFile(fileURL) else {
+        guard ImageLoaderService.shared.isImageFile(fileURL) else {
             print("File is not an image: \(fileURL.path)")
             return
         }
@@ -510,37 +511,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
     
-    private func isImageFile(_ url: URL) -> Bool {
-        let imageExtensions = ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp"]
-        return imageExtensions.contains(url.pathExtension.lowercased())
-    }
+
     
     private func loadImagesFromFolder(_ folderURL: URL) {
-        print("Loading images from folder: \(folderURL.path)")
+        // 使用共享服务加载图片，保持原有的复用和排序行为
+        let imageItems = ImageLoaderService.shared.loadImagesFromFolder(folderURL, shouldReuseItems: true, sortType: .random)
         
-        var imageItems: [ImageItem] = []
-        let fileManager = FileManager.default
-        
-        do {
-            let contents = try fileManager.contentsOfDirectory(at: folderURL, includingPropertiesForKeys: [.isDirectoryKey], options: [])
-            
-            for url in contents {
-                if isImageFile(url) {
-                    imageItems.append(ImageItem(url: url))
-                }
-            }
-            
-            // 按文件名排序
-            imageItems.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            
-            // 更新AppState中的图片列表
-            AppState.shared.images = imageItems
-            AppState.shared.selectedFolderURL = folderURL
-            
-            print("Loaded \(imageItems.count) images from folder")
-        } catch {
-            print("Error loading images from folder: \(error)")
-        }
+        // 更新AppState中的图片列表
+        AppState.shared.images = imageItems
+        AppState.shared.selectedFolderURL = folderURL
     }
     
     // MARK: - NSWindowDelegate

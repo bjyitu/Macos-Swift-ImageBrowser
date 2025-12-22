@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 struct ImageBrowserView: View {
     @StateObject private var viewModel = ImageBrowserViewModel()
@@ -12,6 +13,8 @@ struct ImageBrowserView: View {
     
     // 用于存储通知观察者
     @State private var notificationObserver: NSObjectProtocol?
+    @State private var cancellables = Set<AnyCancellable>()
+    @State private var scrollToTopAction: (() -> Void)?
     
     var body: some View {
         VStack(spacing: 0) {
@@ -25,11 +28,11 @@ struct ImageBrowserView: View {
                 imageGridView
             }
         }
-        .navigationTitle(viewModel.images.isEmpty ? "图片浏览器" : "共 \(viewModel.images.count) 张图片")
-        .onChange(of: viewModel.images) { _ in
+        .navigationTitle(appState.images.isEmpty ? "图片浏览器" : "共 \(appState.images.count) 张图片")
+        .onChange(of: appState.images) { _ in
             // 当图片数量变化时，标题会自动更新
             // 发送通知更新窗口标题
-            NotificationCenter.default.post(name: .updateBrowserWindowTitle, object: nil)
+            NotificationManager.shared.post(name: .updateBrowserWindowTitle)
         }
         .frame(minWidth: 1200, minHeight: 700)
         .edgesIgnoringSafeArea(.top)
@@ -114,19 +117,29 @@ struct ImageBrowserView: View {
     }
     
     private func setupNotificationListeners() {
-        // 使用传统方式监听重新加载图片的通知
-        notificationObserver = NotificationCenter.default.addObserver(
-            forName: .reloadImages,
-            object: nil,
-            queue: .main
-        ) { notification in
-            if let userInfo = notification.userInfo,
-               let folderURL = userInfo["folderURL"] as? URL {
-                self.viewModel.loadImages(from: folderURL)
-            } else if let folderURL = self.appState.selectedFolderURL {
-                self.viewModel.loadImages(from: folderURL)
+        // 使用NotificationManager监听重新加载图片的通知
+        NotificationManager.shared.publisher(for: .reloadImages)
+            .sink { notification in
+                if let userInfo = notification.userInfo,
+                   let folderURL = userInfo["folderURL"] as? URL {
+                    self.viewModel.loadImages(from: folderURL)
+                } else if let folderURL = self.appState.selectedFolderURL {
+                    self.viewModel.loadImages(from: folderURL)
+                }
             }
-        }
+            .store(in: &cancellables)
+        
+        // 监听打开浏览器窗口的通知，确保滚动到选中的图片
+        NotificationManager.shared.publisher(for: .openBrowserWindow)
+            .sink { _ in
+                // 延迟一小段时间确保UI已更新，然后滚动到选中的图片
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    if let selectedID = self.browserWindowState.selectedImageID {
+                        NotificationManager.shared.post(name: .imageSelectionChanged, userInfo: ["imageID": selectedID])
+                    }
+                }
+            }
+            .store(in: &cancellables)
     }
     
     // 显示删除确认对话框
@@ -175,7 +188,7 @@ struct ImageBrowserView: View {
                     }
                     
                     // 发送通知更新窗口标题
-                    NotificationCenter.default.post(name: .updateBrowserWindowTitle, object: nil)
+                    NotificationManager.shared.post(name: .updateBrowserWindowTitle)
                 }
             }
         }
@@ -395,22 +408,22 @@ struct ImageGridView: View {
                 .onChange(of: geometry.size) { _ in
                     hasReceivedGeometry = true
                 }
+                // 监听返回顶部的事件
+                .onReceive(NotificationManager.shared.publisher(for: .scrollToTop)) { _ in
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        proxy.scrollTo("TOP_ANCHOR", anchor: .top)
+                    }
+                }
             }
             .onChange(of: browserWindowState.selectedImageID) { selectedID in
                 if let selectedID = selectedID {
                     // 不再发送全局通知，直接使用 SwiftUI 的状态管理
                     
-                    // DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                         withAnimation(.linear(duration: 0.1)) {
                             proxy.scrollTo(selectedID, anchor: UnitPoint.center)
                         }
-                    // }
-                }
-            }
-            // 监听返回顶部的事件
-            .onReceive(NotificationCenter.default.publisher(for: .scrollToTop)) { _ in
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    proxy.scrollTo("TOP_ANCHOR", anchor: .top)
+                    }
                 }
             }
         }

@@ -1,14 +1,19 @@
 import Foundation
 import SwiftUI
 import ImageIO
+import AppKit
+import Combine
 
 class ImageBrowserViewModel: ObservableObject {
-    @Published var images: [ImageItem] = []
+    // 直接使用共享的图片数组，不再维护本地副本
+    var images: [ImageItem] { AppState.shared.images }
+    
     @Published var selectedFolderURL: URL?
     @Published var isLoading = false
     @Published var errorMessage: String?
     
     private var thumbnailLoadingTasks: [UUID: Task<Void, Never>] = [:]
+    var cancellables = Set<AnyCancellable>()
     
     // 分批加载相关属性
     private var allImageItems: [ImageItem] = []
@@ -33,31 +38,17 @@ class ImageBrowserViewModel: ObservableObject {
         isBatchLoading = false
         
         // 先清空当前图片列表，确保UI立即更新
-        self.images = []
         AppState.shared.images = []
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
-            var imageItems: [ImageItem] = []
-            
-            // 获取文件夹中的所有文件
-            let fileManager = FileManager.default
-            let resourceKeys: [URLResourceKey] = [.isDirectoryKey, .nameKey]
-            
-            if let enumerator = fileManager.enumerator(at: folderURL, includingPropertiesForKeys: resourceKeys) {
-                for case let url as URL in enumerator {
-                    // 检查是否为图片文件
-                    if self.isImageFile(url) {
-                        let imageItem = ImageItem(url: url)
-                        imageItems.append(imageItem)
-                    }
-                }
-            }
+            // 使用共享服务加载图片，使用随机排序以保持一致性
+            let imageItems = ImageLoaderService.shared.loadImagesFromFolder(folderURL, shouldReuseItems: false, sortType: .random)
             
             DispatchQueue.main.async {
-                // 应用随机排序
-                self.allImageItems = self.randomizeImageOrder(imageItems)
+                // 应用随机排序（服务中已完成）
+                self.allImageItems = imageItems
                 self.isLoading = false
                 
                 // 开始分批加载
@@ -83,8 +74,7 @@ class ImageBrowserViewModel: ObservableObject {
             
             // 更新当前显示的图片列表
             await MainActor.run {
-                self.images.append(contentsOf: batchItems)
-                AppState.shared.images = self.images
+                AppState.shared.images.append(contentsOf: batchItems)
             }
             
             // 异步加载当前批次的缩略图
@@ -229,25 +219,7 @@ class ImageBrowserViewModel: ObservableObject {
     }
     
     
-    private func isImageFile(_ url: URL) -> Bool {
-        let imageExtensions = ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp"]
-        return imageExtensions.contains(url.pathExtension.lowercased())
-    }
-    
-    private func randomizeImageOrder(_ images: [ImageItem]) -> [ImageItem] {
-        guard images.count > 1 else { return images }
-        
-        var shuffled = images
-        
-        for i in stride(from: shuffled.count - 1, through: 1, by: -1) {
-            let j = Int.random(in: 0...i)
-            shuffled.swapAt(i, j)
-        }
-        
-        return shuffled
-    }
-    
-    func selectFolder() {
+func selectFolder() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true

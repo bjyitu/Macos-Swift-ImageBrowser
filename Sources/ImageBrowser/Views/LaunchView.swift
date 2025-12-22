@@ -26,7 +26,7 @@ struct LaunchView: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 // 发送打开文件夹选择对话框的通知
-                NotificationCenter.default.post(name: .openImageFolder, object: nil)
+                NotificationManager.shared.post(name: .openImageFolder)
             }
             .onHover { hovering in
                 isHovering = hovering
@@ -62,7 +62,7 @@ struct LaunchView: View {
                 
                 DispatchQueue.main.async {
                     // 检查是否为图片文件
-                    if isImageFile(url) {
+                    if ImageLoaderService.shared.isImageFile(url) {
                         AppState.shared.openImageFile(url)
                     } else {
                         // 如果不是图片文件，检查是否为文件夹
@@ -79,11 +79,7 @@ struct LaunchView: View {
         return true
     }
     
-    // 检查是否为图片文件
-    private func isImageFile(_ url: URL) -> Bool {
-        let imageExtensions = ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp"]
-        return imageExtensions.contains(url.pathExtension.lowercased())
-    }
+
 }
 
 struct LaunchView_Previews: PreviewProvider {
