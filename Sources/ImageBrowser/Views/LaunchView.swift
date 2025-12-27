@@ -63,13 +63,13 @@ struct LaunchView: View {
                 DispatchQueue.main.async {
                     // 检查是否为图片文件
                     if ImageLoaderService.shared.isImageFile(url) {
-                        AppState.shared.openImageFile(url)
+                        NotificationManager.shared.openImageFile(url)
                     } else {
                         // 如果不是图片文件，检查是否为文件夹
                         var isDirectory: ObjCBool = false
                         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue {
                             AppState.shared.selectedFolderURL = url
-                            AppState.shared.openBrowserWindow()
+                            NotificationManager.shared.openBrowserWindow()
                         }
                     }
                 }

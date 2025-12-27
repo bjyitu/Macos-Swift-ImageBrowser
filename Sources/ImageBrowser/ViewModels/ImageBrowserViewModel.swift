@@ -119,7 +119,8 @@ class ImageBrowserViewModel: ObservableObject {
         
         do {
             // 获取图片原始尺寸以计算最佳缩图尺寸
-            let originalSize = try await getImageSize(from: imageItem.url)
+            // let originalSize = try await getImageSize(from: imageItem.url)
+            let originalSize = imageItem.size
             
             // 根据图片宽高比和布局需求动态计算缩图尺寸
             let maxPixelSize = calculateOptimalThumbnailSize(originalSize: originalSize)

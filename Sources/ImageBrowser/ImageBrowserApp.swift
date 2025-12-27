@@ -373,8 +373,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 backing: .buffered,
                 defer: false
             )
-            
+            //全透明
             window.titlebarAppearsTransparent = true
+            //毛玻璃
+            // window.titlebarAppearsTransparent = false
+            // window.titleVisibility = .visible
+            // window.backgroundColor = NSColor.windowBackgroundColor
+            //隐藏标题栏
             // window.titleVisibility = .hidden
             window.titlebarSeparatorStyle = .none
             window.contentViewController = hostingController
@@ -429,7 +434,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         window.title = "\(imageItem.name)"
         window.titlebarAppearsTransparent = true
-        // 设置标题栏背景色为半透明
+        // 设置标题栏背景色为透明
         window.titlebarSeparatorStyle = .none
         window.contentViewController = hostingController
         window.center()
@@ -582,10 +587,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if isDirectory.boolValue {
                         // 选择的是文件夹
                         AppState.shared.selectedFolderURL = url
-                        AppState.shared.openBrowserWindow()
+                        NotificationManager.shared.openBrowserWindow()
                     } else {
                         // 选择的是图片文件
-                        AppState.shared.openImageFile(url)
+                        NotificationManager.shared.openImageFile(url)
                     }
                 }
             }

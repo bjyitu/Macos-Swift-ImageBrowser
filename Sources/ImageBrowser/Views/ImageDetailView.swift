@@ -2,7 +2,7 @@ import SwiftUI
 
 // 自动播放相关常量
 private enum AutoPlayConstants {
-    static let totalPlayInterval: TimeInterval = 3.0 // 每张图片显示的总时间（秒）
+    static let totalPlayInterval: TimeInterval = 3.00 // 每张图片显示的总时间（秒）
     static let progressUpdateInterval: TimeInterval = 0.05 // 进度条更新间隔（秒）
     static let animationDelay: TimeInterval = 0.1 // 动画延迟时间（秒）
 }
@@ -117,7 +117,7 @@ struct ImageDetailView: View {
     // 开始自动播放
     private func startAutoPlay() {
         // 重置进度
-        progress = 0
+        progress = 0.00
         
         // 使用一个计时器同时处理进度更新和图片切换
         autoPlayTimer = Timer.scheduledTimer(withTimeInterval: AutoPlayConstants.progressUpdateInterval, repeats: true) { _ in
@@ -125,13 +125,13 @@ struct ImageDetailView: View {
             self.progress += AutoPlayConstants.progressUpdateInterval / AutoPlayConstants.totalPlayInterval // 每progressUpdateInterval秒增加totalPlayInterval的1/5
             
             // 检查是否达到总播放间隔
-        if self.progress >= 1.0 {
-            // 重置进度
-            self.progress = 0.0
-            
-            // 切换到下一张图片，不停止自动播放
-            self.showNextImage(stopPlayback: false)
-        }
+            if self.progress >= 0.98 {
+                // 重置进度
+                self.progress = 0.00
+                
+                // 切换到下一张图片，不停止自动播放
+                self.showNextImage(stopPlayback: false)
+            }
         }
     }
     
@@ -253,13 +253,22 @@ struct ImageDetailView: View {
     private var windowTitle: String {
         guard let imageItem = viewModel.imageItem else { return "" }
         
+        let maxTitleLength = 50
+        var title = ""
+        
         if let index = AppState.shared.images.firstIndex(of: imageItem) {
             let currentIndex = index + 1
             let totalCount = AppState.shared.images.count
-            return "\(currentIndex)/\(totalCount) \(imageItem.name)"
+            title = "\(currentIndex)/\(totalCount) \(imageItem.name)"
         } else {
-            return imageItem.name
+            title = imageItem.name
         }
+        
+        // 统一处理长度限制
+        if title.count > maxTitleLength {
+            return String(title.prefix(maxTitleLength - 3)) + "..."
+        }
+        return title
     }
     
     private func updateWindowTitle() {
@@ -283,10 +292,10 @@ struct ImageDetailView: View {
             if let image = viewModel.fullImage {
                 Image(nsImage: image)
                     .resizable()
+                    .antialiased(true)                    
                     .interpolation(.high)
-                    .antialiased(true)
-                    .contrast(1.2)
-                    .brightness(0.02)
+                    .contrast(1.1)
+                    .brightness(0.03)
                     .aspectRatio(contentMode: .fit)
                     .clipped()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -296,8 +305,8 @@ struct ImageDetailView: View {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle())
                         .foregroundColor(.gray)
-                    Text(" ")
-                        .font(.system(size: 14))
+                    Text("图片未找到")
+                        .font(.system(size: 16))
                         .foregroundColor(.gray)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -434,13 +443,13 @@ struct PlayPauseButton: View {
     var body: some View {
         ZStack {
             // 背景圆圈进度条
-            Circle()
-                .stroke(Color.black.opacity(0.2), lineWidth: 2)
-                .frame(width: 50, height: 50)
+            // Circle()
+            //     .stroke(Color.black.opacity(0.2), lineWidth: 2)
+            //     .frame(width: 50, height: 50)
             
             // 进度圆圈
             Circle()
-                .trim(from: 0.05, to: isPlaying ? progress : 0)
+                // .trim(from: 0.05, to: isPlaying ? progress : 0)
                 .stroke(
                     AngularGradient(
                         gradient: Gradient(colors: [.white.opacity(0.0), .white.opacity(1.0)]),
@@ -454,8 +463,9 @@ struct PlayPauseButton: View {
                     )
                 )
                 .frame(width: 50, height: 50)
-                .rotationEffect(.degrees(-90))//从默认的3点钟方向转到12点钟方向
-                .animation(isPlaying ? .linear(duration: AutoPlayConstants.progressUpdateInterval) : .none, value: progress)
+                // .rotationEffect(.degrees(-90))//从默认的3点钟方向转到12点钟方向
+                .opacity(isPlaying ? 1.0 : 0.0)
+                .rotationEffect(.degrees(isPlaying ? -90 + (progress * 360) : -90))
             
             Button(action: {
                 onPress()

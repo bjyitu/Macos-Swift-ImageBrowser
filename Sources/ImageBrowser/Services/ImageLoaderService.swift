@@ -44,7 +44,6 @@ class ImageLoaderService {
             }
         }
         
-        var imageItems: [ImageItem] = []
         let fileManager = FileManager.default
         
         // 使用递归枚举器遍历所有子目录
@@ -72,18 +71,43 @@ class ImageLoaderService {
             }
         }
         
+        // 使用 DispatchGroup 实现内部并发创建 ImageItem（10个10个）
+        var imageItems: [ImageItem] = []
+        let group = DispatchGroup()
+        let queue = DispatchQueue.global(qos: .userInitiated)
+        let lock = NSLock()
+        let maxConcurrentTasks = 10
+        let semaphore = DispatchSemaphore(value: maxConcurrentTasks)
+        
         for url in contents {
-            // 检查是否为图片文件
-            if ImageLoaderService.shared.isImageFile(url) {
-                // 根据reuse策略决定是否复用已有的ImageItem对象
+            guard ImageLoaderService.shared.isImageFile(url) else { continue }
+            
+            semaphore.wait()
+            group.enter()
+            
+            queue.async {
+                defer {
+                    semaphore.signal()
+                    group.leave()
+                }
+                
+                var item: ImageItem?
+                
                 if shouldReuseItems, let existingItem = existingImageMap[url.path] {
-                    imageItems.append(existingItem)
+                    item = existingItem
                 } else {
-                    // 如果没有找到现有的ImageItem或不启用复用，创建新的
-                    imageItems.append(ImageItem(url: url))
+                    item = ImageItem(url: url)
+                }
+                
+                if let item = item {
+                    lock.lock()
+                    imageItems.append(item)
+                    lock.unlock()
                 }
             }
         }
+        
+        group.wait()
         
         // 根据排序类型进行排序
         switch sortType {

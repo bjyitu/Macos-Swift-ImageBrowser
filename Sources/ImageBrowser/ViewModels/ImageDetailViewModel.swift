@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import CoreGraphics
+import CoreImage
 
 class ImageDetailViewModel: ObservableObject {
     @Published var imageItem: ImageItem?
@@ -15,7 +16,7 @@ class ImageDetailViewModel: ObservableObject {
     private let cacheQueue = DispatchQueue(label: "com.imagebrowser.detail.cache", qos: .utility)
     
     // 预加载参数
-    private let preloadCount = 5 // 预加载前后各5张图片
+    private let preloadCount = 2 // 预加载前后各2张图片
     
     init() {
         // 初始化处理队列
@@ -179,7 +180,7 @@ class ImageDetailViewModel: ObservableObject {
         // 获取原始尺寸信息
         let originalWidth = CGFloat(image.width)
         let originalHeight = CGFloat(image.height)
-        let originalSize = CGSize(width: originalWidth, height: originalHeight)
+        // let originalSize = CGSize(width: originalWidth, height: originalHeight)
         
         // 使用提供的targetSize，如果没有则使用默认大小
         let windowSize = targetSize ?? CGSize(width: 768, height: 768)
@@ -190,10 +191,10 @@ class ImageDetailViewModel: ObservableObject {
         let scale = maxWindowDimension / imageMaxDimension
         
         // 如果图片小于目标尺寸，不需要缩放
-        if scale >= 1.0 {
-            let nsImage = NSImage(cgImage: image, size: originalSize)
-            return nsImage.sharpened(intensity: self.sharpenIntensity, radius: self.sharpenRadius) ?? nsImage
-        }
+        // if scale >= 1.0 {
+        //     let nsImage = NSImage(cgImage: image, size: originalSize)
+        //     return nsImage.sharpened(intensity: self.sharpenIntensity, radius: self.sharpenRadius) ?? nsImage
+        // }
         
         // 计算缩放后的尺寸
         let scaledWidth = Int(originalWidth * scale)
@@ -207,28 +208,34 @@ class ImageDetailViewModel: ObservableObject {
             return nil
         }
         
-        // 转换为NSImage并应用锐化
+        // 转换为NSImage并应用锐化（使用优化后的GPU加速方法）
         let finalNSImage = NSImage(cgImage: resizedImage, size: scaledSize)
         return finalNSImage.sharpened(intensity: self.sharpenIntensity, radius: self.sharpenRadius) ?? finalNSImage
     }
     
-    // 直接缩放CGImage的方法
+    // 直接缩放CGImage的方法,之前使用CGContext,缩放质量要差一些
     private func resizeCGImage(_ cgImage: CGImage, to size: NSSize) -> CGImage? {
-        let width = Int(size.width)
-        let height = Int(size.height)
+        let ciImage = CIImage(cgImage: cgImage)
         
-        guard let context = CGContext(data: nil,
-                                     width: width,
-                                     height: height,
-                                     bitsPerComponent: 8,
-                                     bytesPerRow: 0,
-                                     space: CGColorSpaceCreateDeviceRGB(),
-                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
-            return nil
-        }
+        // 计算缩放比例
+        let scaleX = size.width / CGFloat(cgImage.width)
+        let scaleY = size.height / CGFloat(cgImage.height)
         
-        context.draw(cgImage, in: CGRect(origin: .zero, size: size))
-        return context.makeImage()
+        // 使用Lanczos高质量缩放滤镜
+        let filter = CIFilter(name: "CILanczosScaleTransform")!
+        filter.setValue(ciImage, forKey: kCIInputImageKey)
+        filter.setValue(scaleX, forKey: "inputScale")
+        filter.setValue(scaleY / scaleX, forKey: "inputAspectRatio")
+        
+        guard let outputImage = filter.outputImage else { return nil }
+        
+        // 使用GPU渲染上下文，提高4K图片处理性能
+        let context = CIContext(options: [
+            .useSoftwareRenderer: false,  // 使用GPU加速
+            .cacheIntermediates: false    // 避免缓存中间结果，减少内存占用
+        ])
+        
+        return context.createCGImage(outputImage, from: outputImage.extent)
     }
 
     // 根据图片原始尺寸计算合适的窗口大小

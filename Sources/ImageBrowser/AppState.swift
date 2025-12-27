@@ -30,48 +30,6 @@ class AppState: ObservableObject {
             }
             .store(in: &cancellables)
     }
-    
-    
-    // 发送显示浏览器窗口的通知
-    func openBrowserWindow() {
-        print("Sending openBrowserWindow notification")
-        NotificationManager.shared.post(name: .openBrowserWindow)
-    }
-    
-    // 发送显示详情窗口的通知
-    func showDetailWindow(with imageItem: ImageItem) {
-        print("AppState.showDetailWindow called with image: \(imageItem.name)")
-        NotificationManager.shared.post(name: .openDetailWindow, userInfo: ["imageItem": imageItem])
-        print("Notification posted for openDetailWindow")
-    }
-    
-    // 发送隐藏浏览器窗口的通知
-    func hideBrowserWindow() {
-        NotificationManager.shared.post(name: .hideBrowserWindow)
-    }
-    
-    // 发送隐藏详情窗口的通知
-    func hideDetailWindow() {
-        NotificationManager.shared.post(name: .hideDetailWindow)
-    }
-    
-    // 发送显示启动窗口的通知
-    func showLaunchWindow() {
-        print("Sending showLaunchWindow notification")
-        NotificationManager.shared.post(name: .showLaunchWindow)
-    }
-    
-    // 发送打开图片文件夹的通知
-    func openImageFolder() {
-        NotificationManager.shared.post(name: .openImageFolder)
-    }
-    
-    // 发送直接打开图片文件的通知
-    func openImageFile(_ fileURL: URL) {
-        print("AppState.openImageFile called with file: \(fileURL.path)")
-        NotificationManager.shared.post(name: .openImageFile, userInfo: ["fileURL": fileURL])
-        print("Notification posted for openImageFile")
-    }
 }
 
 extension Notification.Name {

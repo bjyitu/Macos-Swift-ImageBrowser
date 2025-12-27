@@ -35,13 +35,13 @@ struct ImageBrowserView: View {
             NotificationManager.shared.post(name: .updateBrowserWindowTitle)
         }
         .frame(minWidth: 1200, minHeight: 700)
-        .edgesIgnoringSafeArea(.top)
+        // .edgesIgnoringSafeArea(.top) // 可以将列表向上提一点,但是移动窗口时会激活图片ondrag
         .background(KeyboardHandler(
             onEnter: {
                 // 回车键：切换到详情页
                 if let selectedID = browserWindowState.selectedImageID,
                    let selectedImage = appState.images.first(where: { $0.id == selectedID }) {
-                    AppState.shared.showDetailWindow(with: selectedImage)
+                    NotificationManager.shared.showDetailWindow(with: selectedImage)
                 }
             },
             onDelete: {
@@ -133,7 +133,7 @@ struct ImageBrowserView: View {
         NotificationManager.shared.publisher(for: .openBrowserWindow)
             .sink { _ in
                 // 延迟一小段时间确保UI已更新，然后滚动到选中的图片
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
                     if let selectedID = self.browserWindowState.selectedImageID {
                         NotificationManager.shared.post(name: .imageSelectionChanged, userInfo: ["imageID": selectedID])
                     }
@@ -398,9 +398,8 @@ struct ImageGridView: View {
                         .id("TOP_ANCHOR")
                     
                     imageGridContent(geometry: geometry)
-                        .drawingGroup()
                         .padding(.horizontal, 10)
-                        .padding(.vertical, 10)
+                        .padding(.vertical, -10)//将列表整体向上移动10像素
                 }
                 .onAppear {
                     hasReceivedGeometry = true
@@ -410,19 +409,16 @@ struct ImageGridView: View {
                 }
                 // 监听返回顶部的事件
                 .onReceive(NotificationManager.shared.publisher(for: .scrollToTop)) { _ in
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        proxy.scrollTo("TOP_ANCHOR", anchor: .top)
-                    }
+                    proxy.scrollTo("TOP_ANCHOR", anchor: .top)
                 }
             }
             .onChange(of: browserWindowState.selectedImageID) { selectedID in
                 if let selectedID = selectedID {
                     // 不再发送全局通知，直接使用 SwiftUI 的状态管理
-                    
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        withAnimation(.linear(duration: 0.1)) {
+                        // withAnimation(.linear(duration: 0.1)) {
                             proxy.scrollTo(selectedID, anchor: UnitPoint.center)
-                        }
+                        // }
                     }
                 }
             }
@@ -443,6 +439,7 @@ struct ImageGridView: View {
                 imageRow(row: row)
             }
         }
+        .drawingGroup()
     }
     
     private func imageRow(row: FixedGridRow) -> some View {
@@ -466,7 +463,7 @@ struct ImageGridView: View {
                 }
             },
             onDoubleTap: {
-                AppState.shared.showDetailWindow(with: imageItem)
+                NotificationManager.shared.showDetailWindow(with: imageItem)
             }
         )
         .id(imageItem.id)
