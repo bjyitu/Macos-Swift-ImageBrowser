@@ -36,62 +36,12 @@ struct ImageBrowserView: View {
         }
         .frame(minWidth: 1200, minHeight: 700)
         // .edgesIgnoringSafeArea(.top) // 可以将列表向上提一点,但是移动窗口时会激活图片ondrag
-        .background(KeyboardHandler(
-            onEnter: {
-                // 回车键：切换到详情页
-                if let selectedID = browserWindowState.selectedImageID,
-                   let selectedImage = appState.images.first(where: { $0.id == selectedID }) {
-                    NotificationManager.shared.showDetailWindow(with: selectedImage)
-                }
-            },
-            onDelete: {
-                // Backspace/Delete键：删除当前图片到回收站
-                if let selectedID = browserWindowState.selectedImageID,
-                   let selectedImage = appState.images.first(where: { $0.id == selectedID }) {
-                    showDeleteConfirmation(for: selectedImage)
-                }
-            },
-            onBackslash: {
-                // 反斜杠键：打开图片所在目录
-                if let selectedID = browserWindowState.selectedImageID,
-                   let selectedImage = appState.images.first(where: { $0.id == selectedID }) {
-                    NSWorkspace.shared.selectFile(selectedImage.url.path, inFileViewerRootedAtPath: "")
-                }
-            },
-            onLeftArrow: {
-                // 左箭头键：选择上一张图片
-                guard !appState.images.isEmpty else { return }
-                
-                if let selectedID = browserWindowState.selectedImageID,
-                   let currentIndex = appState.images.firstIndex(where: { $0.id == selectedID }) {
-                    // 不再循环，如果已经是第一张图片则不处理
-                    if currentIndex > 0 {
-                        let previousIndex = currentIndex - 1
-                        let previousImage = appState.images[previousIndex]
-                        browserWindowState.selectedImageID = previousImage.id
-                    }
-                } else if let firstImage = appState.images.first {
-                    // 如果没有选中的图片，选择第一张图片
-                    browserWindowState.selectedImageID = firstImage.id
-                }
-            },
-            onRightArrow: {
-                // 右箭头键：选择下一张图片
-                guard !appState.images.isEmpty else { return }
-                
-                if let selectedID = browserWindowState.selectedImageID,
-                   let currentIndex = appState.images.firstIndex(where: { $0.id == selectedID }) {
-                    // 不再循环，如果已经是最后一张图片则不处理
-                    if currentIndex < appState.images.count - 1 {
-                        let nextIndex = currentIndex + 1
-                        let nextImage = appState.images[nextIndex]
-                        browserWindowState.selectedImageID = nextImage.id
-                    }
-                } else if let firstImage = appState.images.first {
-                    // 如果没有选中的图片，选择第一张图片
-                    browserWindowState.selectedImageID = firstImage.id
-                }
-            }
+        .background(UnifiedKeyboardResponder(
+            keyboardContext: KeyboardActionService.createBrowserKeyboardContext(
+                appState: appState,
+                browserWindowState: browserWindowState,
+                showDeleteConfirmation: showDeleteConfirmation
+            )
         ))
         .onAppear {
             // 设置通知监听器
@@ -128,152 +78,24 @@ struct ImageBrowserView: View {
                 }
             }
             .store(in: &cancellables)
-        
-        // 监听打开浏览器窗口的通知，确保滚动到选中的图片
-        NotificationManager.shared.publisher(for: .openBrowserWindow)
-            .sink { _ in
-                // 延迟一小段时间确保UI已更新，然后滚动到选中的图片
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
-                    if let selectedID = self.browserWindowState.selectedImageID {
-                        NotificationManager.shared.post(name: .imageSelectionChanged, userInfo: ["imageID": selectedID])
-                    }
-                }
-            }
-            .store(in: &cancellables)
     }
     
     // 显示删除确认对话框
     private func showDeleteConfirmation(for imageItem: ImageItem) {
-        let alert = NSAlert()
-        alert.messageText = "确认删除"
-        alert.informativeText = "确定要将图片 \"\(imageItem.name)\" 移动到回收站吗？"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "删除")
-        alert.addButton(withTitle: "取消")
-        
-        // 显示弹窗并处理用户选择
-        if let window = NSApp.keyWindow {
-            alert.beginSheetModal(for: window) { response in
-                if response == .alertFirstButtonReturn {
-                    // 用户确认删除
-                    self.deleteImageItem(imageItem)
-                }
+        ImageActionService.shared.showDeleteConfirmation(for: imageItem) { confirmed in
+            if confirmed {
+                self.deleteImageItem(imageItem)
             }
         }
     }
     
     // 执行删除图片操作
     private func deleteImageItem(_ imageItem: ImageItem) {
-        // 将文件移动到回收站
-        NSWorkspace.shared.recycle([imageItem.url]) { urls, error in
+        ImageActionService.shared.deleteImageItemWithNavigation(imageItem, from: .browser) { success, nextImage, error in
             if let error = error {
-                // 删除失败，显示错误信息
-                DispatchQueue.main.async {
-                    let errorAlert = NSAlert()
-                    errorAlert.messageText = "删除失败"
-                    errorAlert.informativeText = "无法删除图片：\(error.localizedDescription)"
-                    errorAlert.alertStyle = .critical
-                    errorAlert.addButton(withTitle: "确定")
-                    errorAlert.runModal()
-                }
-            } else {
-                // 删除成功，更新UI
-                DispatchQueue.main.async {
-                    // 从应用状态中移除图片
-                    AppState.shared.images.removeAll { $0.id == imageItem.id }
-                    
-                    // 如果删除的是当前选中的图片，清除选中状态
-                    if self.browserWindowState.selectedImageID == imageItem.id {
-                        self.browserWindowState.selectedImageID = nil
-                    }
-                    
-                    // 发送通知更新窗口标题
-                    NotificationManager.shared.post(name: .updateBrowserWindowTitle)
-                }
+                print("删除失败: \(error.localizedDescription)")
             }
-        }
-    }
-}
-
-// 键盘处理器
-struct KeyboardHandler: NSViewRepresentable {
-    let onEnter: () -> Void
-    let onDelete: () -> Void
-    let onBackslash: () -> Void
-    let onLeftArrow: () -> Void
-    let onRightArrow: () -> Void
-    
-    func makeNSView(context: Context) -> NSView {
-        let view = BrowserKeyboardView()
-        view.setupActions(
-            onEnter: onEnter,
-            onDelete: onDelete,
-            onBackslash: onBackslash,
-            onLeftArrow: onLeftArrow,
-            onRightArrow: onRightArrow
-        )
-        
-        // 使视图成为第一响应者
-        DispatchQueue.main.async {
-            view.window?.makeFirstResponder(view)
-        }
-        
-        return view
-    }
-    
-    func updateNSView(_ nsView: NSView, context: Context) {
-        // 不需要更新
-    }
-}
-
-class BrowserKeyboardView: NSView {
-    var onEnter: (() -> Void)?
-    var onDelete: (() -> Void)?
-    var onBackslash: (() -> Void)?
-    var onLeftArrow: (() -> Void)?
-    var onRightArrow: (() -> Void)?
-    
-    func setupActions(
-        onEnter: @escaping () -> Void,
-        onDelete: @escaping () -> Void,
-        onBackslash: @escaping () -> Void,
-        onLeftArrow: @escaping () -> Void,
-        onRightArrow: @escaping () -> Void
-    ) {
-        self.onEnter = onEnter
-        self.onDelete = onDelete
-        self.onBackslash = onBackslash
-        self.onLeftArrow = onLeftArrow
-        self.onRightArrow = onRightArrow
-    }
-    
-    override var acceptsFirstResponder: Bool {
-        return true
-    }
-    
-    override func keyDown(with event: NSEvent) {
-        // 检查应用是否在前台，如果不是则忽略键盘事件
-        guard NSApplication.shared.isActive else {
-            super.keyDown(with: event)
-            return
-        }
-        
-        switch event.keyCode {
-        case 36: // 回车键
-            onEnter?()
-        case 51: // Backspace键
-            onDelete?()
-        case 117: // Delete键
-            onDelete?()
-        case 42: // 反斜杠键
-            onBackslash?()
-        case 123: // 左箭头键
-            onLeftArrow?()
-        case 124: // 右箭头键
-            onRightArrow?()
-        default:
-            // 其他按键不处理
-            super.keyDown(with: event)
+            // 删除后的导航逻辑已经在 ImageActionService 中处理
         }
     }
 }
@@ -409,13 +231,17 @@ struct ImageGridView: View {
                 }
                 // 监听返回顶部的事件
                 .onReceive(NotificationManager.shared.publisher(for: .scrollToTop)) { _ in
-                    proxy.scrollTo("TOP_ANCHOR", anchor: .top)
+                    // 延迟一小段时间确保UI已更新，然后滚动到顶部
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        print("滚动到顶部通知")
+                        proxy.scrollTo("TOP_ANCHOR", anchor: .top)
+                    }   
                 }
             }
             .onChange(of: browserWindowState.selectedImageID) { selectedID in
                 if let selectedID = selectedID {
                     // 不再发送全局通知，直接使用 SwiftUI 的状态管理
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         // withAnimation(.linear(duration: 0.1)) {
                             proxy.scrollTo(selectedID, anchor: UnitPoint.center)
                         // }

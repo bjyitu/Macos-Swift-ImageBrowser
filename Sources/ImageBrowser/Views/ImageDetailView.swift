@@ -30,75 +30,30 @@ struct ImageDetailView: View {
     
     // 切换到上一张图片
     private func showPreviousImage(stopPlayback: Bool = true) {
-        // 如果正在播放且需要停止，停止自动播放
-        if stopPlayback && isPlaying {
-            togglePlayPause()
-        }
-        
-        guard let currentImageItem = viewModel.imageItem,
-              let currentIndex = AppState.shared.images.firstIndex(of: currentImageItem),
-              !AppState.shared.images.isEmpty else { return }
-        
-        // 取消循环浏览：如果是第一张图片，则不进行切换
-        if currentIndex == 0 {
-            print("已经是第一张图片，无法继续向前浏览")
-            return
-        }
-        
-        let previousIndex = currentIndex - 1
-        let previousImage = AppState.shared.images[previousIndex]
-        
-        // 优化：先更新列表页选中状态，再切换图片
-        AppState.shared.browserWindowState.selectedImageID = previousImage.id
-        
-        // 使用新的切换方法，自动管理缓存
-        viewModel.switchToImage(previousImage, shouldAdjustWindow: false)
-        
-        // 异步更新窗口标题，避免阻塞切换
-        DispatchQueue.main.async {
-            self.updateWindowTitle()
-        }
+        ImageActionService.shared.navigateToPreviousImageInDetail(
+            viewModel: viewModel,
+            stopPlayback: stopPlayback,
+            isPlaying: isPlaying,
+            togglePlayPause: togglePlayPause,
+            updateWindowTitle: updateWindowTitle
+        )
     }
     
     // 切换到下一张图片
     private func showNextImage(stopPlayback: Bool = true) {
-        // 如果正在播放且需要停止，停止自动播放
-        if stopPlayback && isPlaying {
-            togglePlayPause()
-        }
-        
-        // 如果是自动播放模式，立即重置进度，避免闪现
-        if !stopPlayback {
-            progress = 0.0
-        }
-        
-        guard let currentImageItem = viewModel.imageItem,
-              let currentIndex = AppState.shared.images.firstIndex(of: currentImageItem),
-              !AppState.shared.images.isEmpty else { return }
-        
-        // 循环浏览：如果是最后一张图片，则跳转到第一张
-        let nextIndex: Int
-        if currentIndex == AppState.shared.images.count - 1 {
-            nextIndex = 0
-            print("到底了 = \(currentIndex)")
-            // 循环滚动时，通知列表页返回顶部
-            NotificationManager.shared.post(name: .scrollToTop)
-        } else {
-            nextIndex = currentIndex + 1
-        }
-        
-        let nextImage = AppState.shared.images[nextIndex]
-        
-        // 优化：先更新列表页选中状态，再切换图片
-        AppState.shared.browserWindowState.selectedImageID = nextImage.id
-        
-        // 使用新的切换方法，自动管理缓存
-        viewModel.switchToImage(nextImage, shouldAdjustWindow: false)
-        
-        // 异步更新窗口标题，避免阻塞切换
-        DispatchQueue.main.async {
-            self.updateWindowTitle()
-        }
+        ImageActionService.shared.navigateToNextImageInDetail(
+            viewModel: viewModel,
+            stopPlayback: stopPlayback,
+            isPlaying: isPlaying,
+            togglePlayPause: togglePlayPause,
+            updateWindowTitle: updateWindowTitle,
+            resetProgress: {
+                // 如果是自动播放模式，立即重置进度，避免闪现
+                if !stopPlayback {
+                    self.progress = 0.0
+                }
+            }
+        )
     }
     
     // 切换播放/暂停状态
@@ -165,71 +120,25 @@ struct ImageDetailView: View {
     private func deleteCurrentImage() {
         guard let imageItem = viewModel.imageItem else { return }
         
-        // 显示确认删除弹窗
-        let alert = NSAlert()
-        alert.messageText = "确认删除"
-        alert.informativeText = "确定要将图片 \"\(imageItem.name)\" 移动到回收站吗？"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "删除")
-        alert.addButton(withTitle: "取消")
-        
-        // 显示弹窗并处理用户选择
-        if let window = NSApp.keyWindow {
-            alert.beginSheetModal(for: window) { response in
-                if response == .alertFirstButtonReturn {
-                    // 用户确认删除
-                    self.deleteImageItem(imageItem)
-                }
+        ImageActionService.shared.showDeleteConfirmation(for: imageItem) { confirmed in
+            if confirmed {
+                self.deleteImageItem(imageItem)
             }
         }
     }
     
     // 执行删除图片操作
     private func deleteImageItem(_ imageItem: ImageItem) {
-        // 将文件移动到回收站
-        NSWorkspace.shared.recycle([imageItem.url]) { urls, error in
-            if let error = error {
-                // 删除失败，显示错误信息
+        ImageActionService.shared.deleteImageItemWithNavigation(imageItem, from: .detail) { success, nextImage, error in
+            if success {
                 DispatchQueue.main.async {
-                    let errorAlert = NSAlert()
-                    errorAlert.messageText = "删除失败"
-                    errorAlert.informativeText = "无法删除图片：\(error.localizedDescription)"
-                    errorAlert.alertStyle = .critical
-                    errorAlert.addButton(withTitle: "确定")
-                    errorAlert.runModal()
-                }
-            } else {
-                // 删除成功，更新UI
-                DispatchQueue.main.async {
-                    // 先获取被删除图片的索引，然后再从列表中移除
-                    let deletedIndex = AppState.shared.images.firstIndex(of: imageItem)
-                    
-                    // 从应用状态中移除图片
-                    AppState.shared.images.removeAll { $0.id == imageItem.id }
-                    
                     // 清理被删除图片的缓存
                     let cacheKey = imageItem.url.absoluteString as NSString
                     self.viewModel.imageCache.removeObject(forKey: cacheKey)
                     
-                    // 如果删除后还有图片，显示下一张或上一张
-                    if !AppState.shared.images.isEmpty {
-                        // 使用之前获取的索引来决定显示哪张图片
-                        if let index = deletedIndex {
-                            if index < AppState.shared.images.count {
-                                // 显示下一张（原来位置的图片）
-                                let nextImage = AppState.shared.images[index]
-                                self.viewModel.switchToImage(nextImage, shouldAdjustWindow: false)
-                            } else {
-                                // 如果删除的是最后一张，显示上一张
-                                let previousImage = AppState.shared.images[index - 1]
-                                self.viewModel.switchToImage(previousImage, shouldAdjustWindow: false)
-                            }
-                        } else {
-                            // 如果无法获取索引，显示第一张图片
-                            if let firstImage = AppState.shared.images.first {
-                                self.viewModel.switchToImage(firstImage, shouldAdjustWindow: false)
-                            }
-                        }
+                    if let nextImage = nextImage {
+                        // 切换到下一张或上一张图片
+                        self.viewModel.switchToImage(nextImage, shouldAdjustWindow: false)
                     } else {
                         // 如果没有图片了，关闭详情窗口并显示列表窗口
                         self.switchToBrowserView()
@@ -238,6 +147,8 @@ struct ImageDetailView: View {
                     // 更新窗口标题
                     self.updateWindowTitle()
                 }
+            } else if let error = error {
+                print("删除失败: \(error.localizedDescription)")
             }
         }
     }
@@ -246,8 +157,7 @@ struct ImageDetailView: View {
     private func openImageDirectory() {
         guard let imageItem = viewModel.imageItem else { return }
         
-        // 使用NSWorkspace打开文件所在的目录并选中文件
-        NSWorkspace.shared.selectFile(imageItem.url.path, inFileViewerRootedAtPath: "")
+        ImageActionService.shared.openImageDirectory(for: imageItem)
     }
     
     private var windowTitle: String {
@@ -419,13 +329,15 @@ struct ImageDetailView: View {
             stopAutoPlay()
         }
         .background(
-            KeyboardResponder(
-                onSpace: { togglePlayPause() },
-                onLeftArrow: { showPreviousImage() }, // 使用默认参数，停止自动播放
-                onRightArrow: { showNextImage() }, // 使用默认参数，停止自动播放
-                onReturn: { switchToBrowserView() },
-                onDelete: { deleteCurrentImage() },
-                onBackslash: { openImageDirectory() }
+            UnifiedKeyboardResponder(
+                keyboardContext: KeyboardActionService.createDetailKeyboardContext(
+                    switchToBrowserView: switchToBrowserView,
+                    deleteCurrentImage: deleteCurrentImage,
+                    openImageDirectory: openImageDirectory,
+                    showPreviousImage: { showPreviousImage() },
+                    showNextImage: { showNextImage() },
+                    togglePlayPause: togglePlayPause
+                )
             )
         )
     }
@@ -449,7 +361,6 @@ struct PlayPauseButton: View {
             
             // 进度圆圈
             Circle()
-                // .trim(from: 0.05, to: isPlaying ? progress : 0)
                 .stroke(
                     AngularGradient(
                         gradient: Gradient(colors: [.white.opacity(0.0), .white.opacity(1.0)]),
@@ -463,6 +374,7 @@ struct PlayPauseButton: View {
                     )
                 )
                 .frame(width: 50, height: 50)
+                // .trim(from: 0.05, to: isPlaying ? progress : 0)
                 // .rotationEffect(.degrees(-90))//从默认的3点钟方向转到12点钟方向
                 .opacity(isPlaying ? 1.0 : 0.0)
                 .rotationEffect(.degrees(isPlaying ? -90 + (progress * 360) : -90))
@@ -495,92 +407,4 @@ struct ImageDetailView_Previews: PreviewProvider {
     }
 }
 
-// 键盘事件响应器
-struct KeyboardResponder: NSViewRepresentable {
-    let onSpace: () -> Void
-    let onLeftArrow: () -> Void
-    let onRightArrow: () -> Void
-    let onReturn: () -> Void
-    let onDelete: () -> Void
-    let onBackslash: () -> Void
-    
-    func makeNSView(context: Context) -> NSView {
-        let view = KeyboardView()
-        view.setupActions(
-            onSpace: onSpace,
-            onLeftArrow: onLeftArrow,
-            onRightArrow: onRightArrow,
-            onReturn: onReturn,
-            onDelete: onDelete,
-            onBackslash: onBackslash
-        )
-        
-        // 使视图成为第一响应者
-        DispatchQueue.main.async {
-            view.window?.makeFirstResponder(view)
-        }
-        
-        return view
-    }
-    
-    func updateNSView(_ nsView: NSView, context: Context) {
-        // 不需要更新
-    }
-}
 
-class KeyboardView: NSView {
-    var onSpace: (() -> Void)?
-    var onLeftArrow: (() -> Void)?
-    var onRightArrow: (() -> Void)?
-    var onReturn: (() -> Void)?
-    var onDelete: (() -> Void)?
-    var onBackslash: (() -> Void)?
-    
-    func setupActions(
-        onSpace: @escaping () -> Void,
-        onLeftArrow: @escaping () -> Void,
-        onRightArrow: @escaping () -> Void,
-        onReturn: @escaping () -> Void,
-        onDelete: @escaping () -> Void,
-        onBackslash: @escaping () -> Void
-    ) {
-        self.onSpace = onSpace
-        self.onLeftArrow = onLeftArrow
-        self.onRightArrow = onRightArrow
-        self.onReturn = onReturn
-        self.onDelete = onDelete
-        self.onBackslash = onBackslash
-    }
-    
-    override var acceptsFirstResponder: Bool {
-        return true
-    }
-    
-    override func keyDown(with event: NSEvent) {
-        // 检查应用是否在前台，如果不是则忽略键盘事件
-        guard NSApplication.shared.isActive else {
-            super.keyDown(with: event)
-            return
-        }
-        
-        switch event.keyCode {
-        case 49: // 空格键
-            onSpace?()
-        case 123: // 左箭头键
-            onLeftArrow?()
-        case 124: // 右箭头键
-            onRightArrow?()
-        case 36: // 回车键
-            onReturn?()
-        case 51: // Delete键
-            onDelete?()
-        case 117: // Delete键（向前删除）
-            onDelete?()
-        case 42: // 反斜杠键
-            onBackslash?()
-        default:
-            // 其他按键不处理
-            super.keyDown(with: event)
-        }
-    }
-}

@@ -56,7 +56,6 @@ struct ImageBrowserApp: App {
         
         NotificationManager.shared.publisher(for: .openBrowserWindow)
             .sink { notification in
-                print("Opening browser window")
                 // 默认情况下需要重新加载图片，除非明确指定不需要
                 let shouldReloadImages = (notification.userInfo?["shouldReloadImages"] as? Bool) ?? true
                 appDelegate.openBrowserWindow(shouldReloadImages: shouldReloadImages)
@@ -215,12 +214,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             switch fileType {
             case .file:
                 if ImageLoaderService.shared.isImageFile(url) {
-                    print("Opening image file: \(url.path)")
+                    print("filetype: image, Opening image file: \(url.path)")
                     self.openImageFileWithRetry(url, attempt: 0)
                     return
                 }
             case .directory:
-                print("Opening folder: \(url.path)")
+                print("filetype: folder, Opening folder: \(url.path)")
                 self.loadImagesFromFolder(url)
                 self.openBrowserWindow(shouldReloadImages: false)
                 return
@@ -480,8 +479,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - 直接打开图片文件功能
     
     func openImageFile(_ fileURL: URL) {
-        print("Opening image file: \(fileURL.path)")
-        
         // 检查是否为图片文件
         guard ImageLoaderService.shared.isImageFile(fileURL) else {
             print("File is not an image: \(fileURL.path)")

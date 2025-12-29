@@ -107,17 +107,6 @@ class NotificationManager: ObservableObject {
         post(name: .reloadImages, userInfo: userInfo)
     }
     
-    /// 发送图片选择变更通知
-    /// - Parameters:
-    ///   - selectedIndex: 选中索引
-    ///   - totalCount: 总数量
-    func imageSelectionChanged(selectedIndex: Int, totalCount: Int) {
-        post(name: .imageSelectionChanged, userInfo: [
-            "selectedIndex": selectedIndex,
-            "totalCount": totalCount
-        ])
-    }
-    
     /// 发送鼠标滚轮事件通知
     /// - Parameter event: 鼠标事件
     func scrollWheel(event: NSEvent) {

@@ -45,7 +45,6 @@ extension Notification.Name {
     static let openImageFile = Notification.Name("com.imagebrowser.openImageFile")
     static let reloadImages = Notification.Name("com.imagebrowser.reloadImages")
     static let adjustWindowSize = Notification.Name("com.imagebrowser.adjustWindowSize")
-    static let imageSelectionChanged = Notification.Name("com.imagebrowser.imageSelectionChanged")
     static let scrollToTop = Notification.Name("com.imagebrowser.scrollToTop")
 }
 
