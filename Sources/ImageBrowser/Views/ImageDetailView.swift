@@ -406,5 +406,3 @@ struct ImageDetailView_Previews: PreviewProvider {
         ImageDetailView(imageItem: ImageItem(url: URL(fileURLWithPath: "/tmp/sample.jpg")))
     }
 }
-
-

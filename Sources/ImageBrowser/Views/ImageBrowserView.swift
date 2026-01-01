@@ -289,7 +289,7 @@ struct ImageGridView: View {
                 }
             },
             onDoubleTap: {
-                NotificationManager.shared.showDetailWindow(with: imageItem)
+                NotificationManager.shared.openDetailWindow(with: imageItem)
             }
         )
         .id(imageItem.id)

@@ -2,6 +2,22 @@ import Foundation
 import AppKit
 import Combine
 
+// MARK: - Notification Names
+extension Notification.Name {
+    static let hideBrowserWindow = Notification.Name("com.imagebrowser.hideBrowserWindow")
+    static let hideDetailWindow = Notification.Name("com.imagebrowser.hideDetailWindow")
+    static let openImageFolder = Notification.Name("com.imagebrowser.openImageFolder")
+    static let openBrowserWindow = Notification.Name("com.imagebrowser.openBrowserWindow")
+    static let openDetailWindow = Notification.Name("com.imagebrowser.openDetailWindow")
+    static let showLaunchWindow = Notification.Name("com.imagebrowser.showLaunchWindow")
+    static let updateBrowserWindowTitle = Notification.Name("com.imagebrowser.updateBrowserWindowTitle")
+    static let scrollWheel = Notification.Name("com.imagebrowser.scrollWheel")
+    static let openImageFile = Notification.Name("com.imagebrowser.openImageFile")
+    static let reloadImages = Notification.Name("com.imagebrowser.reloadImages")
+    static let adjustWindowSize = Notification.Name("com.imagebrowser.adjustWindowSize")
+    static let scrollToTop = Notification.Name("com.imagebrowser.scrollToTop")
+}
+
 /// 统一的通知管理器，完全基于Publisher模式处理所有通知
 class NotificationManager: ObservableObject {
     static let shared = NotificationManager()
@@ -71,8 +87,8 @@ class NotificationManager: ObservableObject {
     
     // MARK: - 便捷方法
     
-    /// 发送显示详情窗口通知
-    func showDetailWindow(with imageItem: ImageItem) {
+    /// 发送打开详情窗口通知
+    func openDetailWindow(with imageItem: ImageItem) {
         post(name: .openDetailWindow, userInfo: ["imageItem": imageItem])
     }
     
@@ -92,10 +108,17 @@ class NotificationManager: ObservableObject {
     }
     
     /// 发送打开浏览器窗口通知
-    /// - Parameter shouldReloadImages: 是否重新加载图片
+    /// - Parameter shouldReloadImages: 是否需要重新加载图片
     func openBrowserWindow(shouldReloadImages: Bool = true) {
         post(name: .openBrowserWindow, userInfo: ["shouldReloadImages": shouldReloadImages])
     }
+    
+    /// 发送打开图片文件通知
+    /// - Parameter fileURL: 图片文件URL
+    func openImageFile(_ fileURL: URL) {
+        post(name: .openImageFile, userInfo: ["fileURL": fileURL])
+    }
+
     
     /// 发送重新加载图片通知
     /// - Parameter folderURL: 文件夹URL
@@ -113,11 +136,7 @@ class NotificationManager: ObservableObject {
         post(name: .scrollWheel, object: event)
     }
     
-    /// 发送打开图片文件通知
-    /// - Parameter fileURL: 文件URL
-    func openImageFile(_ fileURL: URL) {
-        post(name: .openImageFile, userInfo: ["fileURL": fileURL])
-    }
+
     
     /// 发送调整窗口大小通知
     /// - Parameters:

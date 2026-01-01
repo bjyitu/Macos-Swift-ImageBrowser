@@ -13,7 +13,6 @@ struct ImageBrowserApp: App {
         // 设置应用激活策略为常规应用，使其在 Dock 中显示并能够正常显示窗口
         print("Initializing ImageBrowserApp")
         NSApplication.shared.setActivationPolicy(.regular)
-        print("Application activation policy set to .regular")
     }
     
     var body: some Scene {
@@ -44,12 +43,9 @@ struct ImageBrowserApp: App {
     
     // 监听通知
     func onAppear() {
-        print("Setting up notification listeners in ImageBrowserApp")
-        
         // 监听打开文件夹选择对话框的通知
         NotificationManager.shared.publisher(for: .openImageFolder)
             .sink { _ in
-                print("Received openImageFolder notification")
                 appDelegate.openImageFolder()
             }
             .store(in: &cancellables)
@@ -65,13 +61,10 @@ struct ImageBrowserApp: App {
         // 监听打开详情窗口的通知
         NotificationManager.shared.publisher(for: .openDetailWindow)
             .sink { notification in
-                print("Received openDetailWindow notification")
                 if let userInfo = notification.userInfo,
                    let imageItem = userInfo["imageItem"] as? ImageItem {
-                    print("Setting selectedImageItem to: \(imageItem.name)")
                     AppState.shared.selectedImageItem = imageItem
                     print("Opening detail window for image: \(imageItem.name)")
-                    
                     // 打开详情窗口
                     appDelegate.openDetailWindow(with: imageItem)
                 } else {
@@ -83,10 +76,8 @@ struct ImageBrowserApp: App {
         // 监听直接打开图片文件的通知
         NotificationManager.shared.publisher(for: .openImageFile)
             .sink { notification in
-                print("Received openImageFile notification")
                 if let userInfo = notification.userInfo,
                    let fileURL = userInfo["fileURL"] as? URL {
-                    print("Opening image file: \(fileURL.path)")
                     appDelegate.openImageFile(fileURL)
                 } else {
                     print("Failed to extract fileURL from notification")
@@ -109,8 +100,6 @@ struct ImageBrowserApp: App {
                 appDelegate.updateBrowserWindowTitle()
             }
             .store(in: &cancellables)
-        
-        print("Notification listeners setup complete")
     }
     
     @State private var cancellables = Set<AnyCancellable>()
@@ -133,10 +122,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 应用启动完成后的初始化工作
-        print("Application did finish launching")
-        
-
-        
+        print("Application did finish launching")  
         // 添加本地滚轮事件监听（针对应用内窗口）
         NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
             // 只在详情窗口显示时处理滚轮事件
@@ -150,7 +136,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // 检查是否有启动时传递的文件URL（适用于Open With机制）
         if let url = NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: keyDirectObject)?.stringValue {
             let fileURL = URL(fileURLWithPath: url)
-            print("Found file URL in AppleEvent: \(fileURL.path)")
             if ImageLoaderService.shared.isImageFile(fileURL) {
                 openImageFile(fileURL)
                 return
@@ -165,23 +150,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             for i in 1..<arguments.count {
                 let arg = arguments[i]
                 let fileURL = URL(fileURLWithPath: arg)
-                print("Processing command line argument: \(arg)")
                 
                 if ImageLoaderService.shared.isImageFile(fileURL) {
-                    print("Opening image file from command line: \(fileURL.path)")
                     openImageFile(fileURL)
                     return
                 }
             }
         }
-        
-        // 延迟显示启动窗口，给application(_:open:)方法处理时间
-        // 如果应用是通过Open With启动的，application(_:open:)会在稍后被调用
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
             // 检查是否有窗口已经显示
             let visibleWindows = NSApplication.shared.windows.filter { $0.isVisible }
             if visibleWindows.isEmpty {
-                print("No windows visible after launch delay, showing launch window")
                 self.openLaunchWindow()
             } else {
                 print("Windows already visible, skipping launch window")
@@ -191,22 +171,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     // 处理从Finder或其他应用打开图片文件
     func application(_ application: NSApplication, open urls: [URL]) {
-        print("=== Application open URLs called ===")
-        print("URLs: \(urls)")
-        
+        print("=== Application open called ===")
+        print("Files: \(urls.map { $0.path })")
         // 确保应用成为前台应用
         NSApp.activate(ignoringOtherApps: true)
-        
-        // 延迟处理，确保应用已经完全启动（采用PVApp的延迟策略）
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+        // 延迟处理，确保应用已经完全启动
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
             self.handleFileOpen(urls)
         }
     }
     
-    // 统一的文件打开处理方法（借鉴PVApp的架构）
+    // 统一的文件打开处理方法
     private func handleFileOpen(_ urls: [URL]) {
         for url in urls {
-            print("Processing URL: \(url.path)")
             
             // 检查文件类型
             let fileType = getFileType(url)
@@ -265,7 +242,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
     
-    // 文件类型判断（借鉴PVApp的方法）
+    // 文件类型判断
     private func getFileType(_ url: URL) -> FileType {
         let fileManager = FileManager.default
         var isDirectory: ObjCBool = false
@@ -277,7 +254,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return isDirectory.boolValue ? .directory : .file
     }
     
-    // 延迟计算（借鉴PVApp的策略）
+    // 延迟计算
     private func calculateDelay(for attempt: Int) -> Double {
         switch attempt {
         case 0:
@@ -298,32 +275,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case unknown
     }
     
-    // 处理单个文件打开（备用方法）
+    // 处理单个文件打开（兼容旧API）
     func application(_ application: NSApplication, openFile filename: String) -> Bool {
-        print("=== Application openFile called ===")
-        print("File path: \(filename)")
-        
+        // 直接调用主方法处理，避免重复逻辑
         let url = URL(fileURLWithPath: filename)
-        
-        // 确保应用成为前台应用
-        NSApp.activate(ignoringOtherApps: true)
-        
-        // 使用统一的文件处理方法
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.handleFileOpen([url])
-        }
-        
+        self.application(application, open: [url])
         return true
     }
     
     // 处理Apple事件（用于"Open With"功能）
     @objc func handleAppleEvent(_ event: NSAppleEventDescriptor, with replyEvent: NSAppleEventDescriptor) {
-        print("=== Handle Apple Event called ===")
-        print("Event class: \(event.eventClass), event ID: \(event.eventID)")
-        
         if event.eventClass == kCoreEventClass && event.eventID == kAEOpenDocuments {
-            print("Open Documents event received")
-            
             // 获取文件列表
             if let files = event.paramDescriptor(forKeyword: keyDirectObject) {
                 if files.descriptorType == typeAEList {
@@ -356,7 +318,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
     
-    func openBrowserWindow(shouldReloadImages: Bool = false) {
+    func openBrowserWindow(shouldReloadImages: Bool = true) {
         print("Opening browser window using AppKit, shouldReloadImages: \(shouldReloadImages)")
         
         // 隐藏其他窗口
@@ -455,7 +417,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     func openLaunchWindow() {
-        print("Opening launch window using AppKit")
         
         // 隐藏其他窗口
         hideAllWindows()
@@ -481,7 +442,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func openImageFile(_ fileURL: URL) {
         // 检查是否为图片文件
         guard ImageLoaderService.shared.isImageFile(fileURL) else {
-            print("File is not an image: \(fileURL.path)")
             return
         }
         
@@ -531,20 +491,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         // 检查关闭的是否是浏览器窗口
         if sender == browserWindow {
-            print("Browser window is closing")
-            
             // 检查是否有其他可见窗口
             let visibleWindows = NSApplication.shared.windows.filter { $0.isVisible }
-            print("Visible windows count: \(visibleWindows.count)")
-            
             // 如果没有其他可见窗口，退出应用
             if visibleWindows.count <= 1 { // 只包含当前即将关闭的窗口
-                print("No other visible windows, exiting application")
                 NSApplication.shared.terminate(nil)
                 return false // 阻止默认关闭行为，因为我们已经处理了退出
             }
         }
-        
         // 默认允许关闭
         return true
     }
@@ -584,7 +538,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if isDirectory.boolValue {
                         // 选择的是文件夹
                         AppState.shared.selectedFolderURL = url
-                        NotificationManager.shared.openBrowserWindow()
+                        NotificationManager.shared.openBrowserWindow(shouldReloadImages: true)
                     } else {
                         // 选择的是图片文件
                         NotificationManager.shared.openImageFile(url)

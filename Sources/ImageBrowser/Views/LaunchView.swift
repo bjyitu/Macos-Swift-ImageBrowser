@@ -14,11 +14,11 @@ struct LaunchView: View {
                     .foregroundColor(isHovering || isDropTarget ? .blue : .gray)
                     .padding(.bottom, 10)
                 Text("点击加载图片或目录")
-                    .font(.title2)
+                    .font(.system(size: 14))
                     .foregroundColor(.secondary)
                     .opacity(0.7)
                 Text("或拖拽图片文件到此窗口")
-                    .font(.callout)
+                    .font(.system(size: 12))
                     .foregroundColor(.secondary)
                     .opacity(0.7)
             }
@@ -34,7 +34,7 @@ struct LaunchView: View {
             .padding()
             .background(isDropTarget ? Color.blue.opacity(0.1) : Color.clear)
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: 6)
                     .stroke(isDropTarget ? Color.blue : Color.clear, lineWidth: 2)
             )
             // 添加拖拽支持
@@ -42,7 +42,7 @@ struct LaunchView: View {
                 handleDrop(providers: providers)
             }
         }
-        .frame(minWidth: 600, minHeight: 600)
+        .frame(minWidth: 200, minHeight: 200)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 // 空的按钮，保持布局一致性
@@ -69,13 +69,12 @@ struct LaunchView: View {
                         var isDirectory: ObjCBool = false
                         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue {
                             AppState.shared.selectedFolderURL = url
-                            NotificationManager.shared.openBrowserWindow()
+                            NotificationManager.shared.openBrowserWindow(shouldReloadImages: true)
                         }
                     }
                 }
             }
         }
-        
         return true
     }
     

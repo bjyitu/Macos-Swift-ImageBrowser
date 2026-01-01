@@ -44,7 +44,7 @@ extension KeyboardActionService {
                 // 回车键：切换到详情页
                 if let selectedID = browserWindowState.selectedImageID,
                    let selectedImage = appState.images.first(where: { $0.id == selectedID }) {
-                    NotificationManager.shared.showDetailWindow(with: selectedImage)
+                    NotificationManager.shared.openDetailWindow(with: selectedImage)
                 }
             },
             onDelete: {

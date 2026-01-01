@@ -213,7 +213,7 @@ class ImageDetailViewModel: ObservableObject {
         return finalNSImage.sharpened(intensity: self.sharpenIntensity, radius: self.sharpenRadius) ?? finalNSImage
     }
     
-    // 直接缩放CGImage的方法,之前使用CGContext,缩放质量要差一些
+    // 直接缩放CGImage的方法,之前使用CGContext,缩放质量要差一些,.bak文件可以直接节省这个方法,质量稍差
     private func resizeCGImage(_ cgImage: CGImage, to size: NSSize) -> CGImage? {
         let ciImage = CIImage(cgImage: cgImage)
         
@@ -310,4 +310,46 @@ class ImageDetailViewModel: ObservableObject {
         window.setFrame(newFrame, display: true, animate: true)
     }
 
+}
+
+// NSImage锐化扩展（仅在ImageDetailViewModel中使用）
+private extension NSImage {
+    /// 共享的CIContext实例，用于GPU加速的图像处理
+    /// 重用CIContext可以避免重复初始化开销，提高性能
+    private static let sharedCIContext = CIContext(options: [
+        .useSoftwareRenderer: false,  // 强制使用GPU加速
+        .cacheIntermediates: false,   // 不缓存中间结果，减少内存占用
+        .priorityRequestLow: false    // 使用高优先级处理
+    ])
+    
+    /// 应用锐化滤镜（GPU优化版本）
+    /// - Parameters:
+    ///   - intensity: 锐化强度，默认1.2
+    ///   - radius: 锐化半径，默认1.0
+    /// - Returns: 锐化后的NSImage，失败时返回nil
+    func sharpened(intensity: Double = 1.2, radius: Double = 1.0) -> NSImage? {
+        guard let cgImage = self.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+        
+        let ciImage = CIImage(cgImage: cgImage)
+        
+        // 创建USM锐化滤镜（Unsharp Mask）
+        let filter = CIFilter(name: "CIUnsharpMask")
+        filter?.setValue(ciImage, forKey: kCIInputImageKey)
+        filter?.setValue(NSNumber(value: intensity), forKey: "inputIntensity")
+        filter?.setValue(NSNumber(value: radius), forKey: "inputRadius")
+        
+        guard let outputImage = filter?.outputImage else {
+            return nil
+        }
+        
+        // 使用共享的CIContext进行GPU渲染
+        guard let outputCGImage = Self.sharedCIContext.createCGImage(outputImage, from: outputImage.extent) else {
+            return nil
+        }
+        
+        // 将CGImage转换为NSImage
+        return NSImage(cgImage: outputCGImage, size: self.size)
+    }
 }
