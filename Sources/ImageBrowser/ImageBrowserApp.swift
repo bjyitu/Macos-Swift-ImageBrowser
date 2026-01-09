@@ -388,7 +388,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // 使用固定尺寸，让ImageDetailView的缩放逻辑负责调整窗口大小
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1024, height: 600),
-            styleMask: [.titled,.fullSizeContentView],
+            styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )

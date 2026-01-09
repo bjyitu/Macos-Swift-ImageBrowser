@@ -218,19 +218,4 @@ class ImageBrowserViewModel: ObservableObject {
             return 350 // 适合布局尺寸约280-320px
         }
     }
-    
-    
-func selectFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "选择文件夹"
-        
-        if panel.runModal() == .OK {
-            if let url = panel.url {
-                loadImages(from: url)
-            }
-        }
-    }
 }

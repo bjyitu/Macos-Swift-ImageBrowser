@@ -2,14 +2,15 @@ import Foundation
 import SwiftUI
 import CoreGraphics
 import CoreImage
+import CoreImage.CIFilterBuiltins
 
 class ImageDetailViewModel: ObservableObject {
     @Published var imageItem: ImageItem?
     @Published var fullImage: NSImage?
     
     // 锐化参数
-    private let sharpenIntensity: Double = 1.2
-    private let sharpenRadius: Double = 1
+    private let sharpenIntensity: Double = 2.2
+    private let sharpenRadius: Double = 0.5
     
     // 图片缓存系统
     let imageCache = NSCache<NSString, NSImage>()
@@ -322,7 +323,7 @@ private extension NSImage {
         .priorityRequestLow: false    // 使用高优先级处理
     ])
     
-    /// 应用锐化滤镜（GPU优化版本）
+    /// 应用锐化滤镜（优化版本）
     /// - Parameters:
     ///   - intensity: 锐化强度，默认1.2
     ///   - radius: 锐化半径，默认1.0
@@ -334,17 +335,17 @@ private extension NSImage {
         
         let ciImage = CIImage(cgImage: cgImage)
         
-        // 创建USM锐化滤镜（Unsharp Mask）
-        let filter = CIFilter(name: "CIUnsharpMask")
-        filter?.setValue(ciImage, forKey: kCIInputImageKey)
-        filter?.setValue(NSNumber(value: intensity), forKey: "inputIntensity")
-        filter?.setValue(NSNumber(value: radius), forKey: "inputRadius")
+        // 使用现代API创建滤镜
+        let sharpenFilter = CIFilter.unsharpMask()
+        sharpenFilter.inputImage = ciImage
+        sharpenFilter.intensity = Float(intensity)
+        sharpenFilter.radius = Float(radius)
         
-        guard let outputImage = filter?.outputImage else {
+        guard let outputImage = sharpenFilter.outputImage else {
             return nil
         }
         
-        // 使用共享的CIContext进行GPU渲染
+        // 保留GPU优化：使用共享CIContext进行渲染
         guard let outputCGImage = Self.sharedCIContext.createCGImage(outputImage, from: outputImage.extent) else {
             return nil
         }

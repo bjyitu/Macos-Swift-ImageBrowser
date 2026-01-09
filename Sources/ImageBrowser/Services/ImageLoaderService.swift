@@ -38,9 +38,18 @@ class ImageLoaderService {
         if sortType == .random {
             // clearCache(for: folderURL)
             let key = cacheKey(for: folderURL)
-            if let cachedItems = getCachedSortedImages(for: key) {
+            
+            // 检查文件夹内容是否发生变化
+            if let cachedItems = getCachedSortedImages(for: key),
+               !hasFolderContentChanged(folderURL, cachedItems: cachedItems) {
                 print("Using cached sorted images for folder: \(folderURL.path)")
                 return cachedItems
+            } else if let cachedItems = getCachedSortedImages(for: key) {
+                // 内容已变化，执行增量更新
+                print("Performing incremental update for folder: \(folderURL.path)")
+                let updatedItems = performIncrementalUpdate(for: folderURL, cachedItems: cachedItems, sortType: sortType)
+                cacheSortedImages(updatedItems, for: folderURL)
+                return updatedItems
             }
         }
         
@@ -76,7 +85,7 @@ class ImageLoaderService {
         let group = DispatchGroup()
         let queue = DispatchQueue.global(qos: .userInitiated)
         let lock = NSLock()
-        let maxConcurrentTasks = 10
+        let maxConcurrentTasks = 200
         let semaphore = DispatchSemaphore(value: maxConcurrentTasks)
         
         for url in contents {
@@ -175,6 +184,102 @@ class ImageLoaderService {
     func clearAllCache() {
         cacheQueue.async {
             self.sortedImageCache.removeAll()
+        }
+    }
+    
+    /// 检查文件夹内容是否发生变化
+    /// - Parameters:
+    ///   - folderURL: 文件夹URL
+    ///   - cachedItems: 缓存的图片项数组
+    /// - Returns: 如果内容已变化返回true，否则返回false
+    private func hasFolderContentChanged(_ folderURL: URL, cachedItems: [ImageItem]) -> Bool {
+        let fileManager = FileManager.default
+        
+        // 获取当前文件夹中的所有图片文件
+        var currentImagePaths: Set<String> = []
+        
+        do {
+            let resourceKeys: [URLResourceKey] = [.isDirectoryKey, .nameKey]
+            let enumerator = fileManager.enumerator(at: folderURL,
+                                                  includingPropertiesForKeys: resourceKeys,
+                                                  options: [.skipsHiddenFiles])
+            
+            while let fileURL = enumerator?.nextObject() as? URL {
+                let resourceValues = try fileURL.resourceValues(forKeys: Set(resourceKeys))
+                
+                // 只处理图片文件，跳过目录
+                if let isDirectory = resourceValues.isDirectory, !isDirectory,
+                   isImageFile(fileURL) {
+                    currentImagePaths.insert(fileURL.path)
+                }
+            }
+        } catch {
+            print("Error enumerating files for change detection: \(error)")
+            return true // 出错时认为内容已变化
+        }
+        
+        // 获取缓存中的图片路径
+        let cachedImagePaths = Set(cachedItems.map { $0.url.path })
+        
+        // 比较两个集合是否相同
+        return currentImagePaths != cachedImagePaths
+    }
+    
+    /// 执行增量更新
+    /// - Parameters:
+    ///   - folderURL: 文件夹URL
+    ///   - cachedItems: 缓存的图片项数组
+    ///   - sortType: 排序类型
+    /// - Returns: 更新后的图片项数组
+    private func performIncrementalUpdate(for folderURL: URL, cachedItems: [ImageItem], sortType: SortType) -> [ImageItem] {
+        let fileManager = FileManager.default
+        
+        // 创建已缓存图片的路径到ImageItem的映射
+        var cachedItemsMap: [String: ImageItem] = [:]
+        for item in cachedItems {
+            cachedItemsMap[item.url.path] = item
+        }
+        
+        // 获取当前文件夹中的所有图片文件
+        var newItems: [ImageItem] = []
+        var updatedItems: [ImageItem] = []
+        
+        do {
+            let resourceKeys: [URLResourceKey] = [.isDirectoryKey, .nameKey]
+            let enumerator = fileManager.enumerator(at: folderURL,
+                                                  includingPropertiesForKeys: resourceKeys,
+                                                  options: [.skipsHiddenFiles])
+            
+            while let fileURL = enumerator?.nextObject() as? URL {
+                let resourceValues = try fileURL.resourceValues(forKeys: Set(resourceKeys))
+                
+                // 只处理图片文件，跳过目录
+                if let isDirectory = resourceValues.isDirectory, !isDirectory,
+                   isImageFile(fileURL) {
+                    
+                    if let cachedItem = cachedItemsMap[fileURL.path] {
+                        // 文件已存在，保留缓存的ImageItem
+                        updatedItems.append(cachedItem)
+                    } else {
+                        // 新文件，创建新的ImageItem
+                        let newItem = ImageItem(url: fileURL)
+                        newItems.append(newItem)
+                        updatedItems.append(newItem)
+                    }
+                }
+            }
+        } catch {
+            print("Error performing incremental update: \(error)")
+            // 出错时回退到完全重新加载
+            return loadImagesFromFolder(folderURL, shouldReuseItems: false, sortType: sortType)
+        }
+        
+        // 根据排序类型排序
+        switch sortType {
+        case .fileName:
+            return updatedItems.sorted { $0.url.lastPathComponent < $1.url.lastPathComponent }
+        case .random:
+            return updatedItems.shuffled()
         }
     }
 }

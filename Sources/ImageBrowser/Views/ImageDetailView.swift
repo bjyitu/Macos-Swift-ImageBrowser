@@ -202,8 +202,8 @@ struct ImageDetailView: View {
             if let image = viewModel.fullImage {
                 Image(nsImage: image)
                     .resizable()
-                    .antialiased(true)                    
                     .interpolation(.high)
+                    .antialiased(true)
                     .contrast(1.1)
                     .brightness(0.03)
                     .aspectRatio(contentMode: .fit)
