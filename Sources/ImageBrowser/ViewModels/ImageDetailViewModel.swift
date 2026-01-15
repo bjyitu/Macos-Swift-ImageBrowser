@@ -9,8 +9,8 @@ class ImageDetailViewModel: ObservableObject {
     @Published var fullImage: NSImage?
     
     // 锐化参数
-    private let sharpenIntensity: Double = 1.2
-    private let sharpenRadius: Double = 1
+    private let sharpenIntensity: Double = 8
+    private let sharpenRadius: Double = 0.3
     
     // 图片缓存系统
     let imageCache = NSCache<NSString, NSImage>()
