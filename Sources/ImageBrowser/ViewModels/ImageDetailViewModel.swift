@@ -9,7 +9,7 @@ class ImageDetailViewModel: ObservableObject {
     @Published var fullImage: NSImage?
     
     // 锐化参数
-    private let sharpenIntensity: Double = 8
+    private let sharpenIntensity: Double = 10
     private let sharpenRadius: Double = 0.3
     
     // 图片缓存系统
@@ -336,10 +336,16 @@ private extension NSImage {
         let ciImage = CIImage(cgImage: cgImage)
         
         // 使用现代API创建滤镜
-        let sharpenFilter = CIFilter.unsharpMask()
+        // let sharpenFilter = CIFilter.unsharpMask()
+        // sharpenFilter.inputImage = ciImage
+        // sharpenFilter.intensity = Float(intensity)
+        // sharpenFilter.radius = Float(radius)
+
+        let sharpenFilter = CIFilter.noiseReduction()
         sharpenFilter.inputImage = ciImage
-        sharpenFilter.intensity = Float(intensity)
-        sharpenFilter.radius = Float(radius)
+        sharpenFilter.noiseLevel = 0.015 //最大0.1,0.01至0.02
+        sharpenFilter.sharpness = 0.8 //最大2,0.2-1之间
+
         
         guard let outputImage = sharpenFilter.outputImage else {
             return nil
