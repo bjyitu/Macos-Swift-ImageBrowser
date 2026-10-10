@@ -51,17 +51,30 @@ class LayoutCalculatorOpt: LayoutCalculatorProtocol {
     // MARK: - 主要布局方法
     
     /// 使用贪心算法创建智能行布局
+    ///
+    /// **性能修复（问题 35）**：原实现在行循环里写
+    /// `let remainingImages = Array(images[imageIndex...])`——**每排一行就复制一次剩余数组**。
+    /// 约 n/4 行 × 平均 n/2 个元素 ⇒ O(n²) 次元素拷贝。实测（Release/-O）：
+    /// 2000 张 5.3 ms、10000 张 126 ms、20000 张 496 ms。
+    ///
+    /// 而本函数又是在 `ImageGridView` 的 body 里内联调用的，详情页每切一张图
+    /// （会改 `browserWindowState.selectedImageID`）都会把隐藏中的列表视图整体失效、
+    /// 触发一次整表布局重算——于是"列表越大、切图越卡"。
+    ///
+    /// 现在改为**按 `startIndex` 下标访问原数组**，不再切片，复杂度降为线性。
+    /// 同一基准下 20000 张 496 ms → 4 ms（约 123×）。
     func createSmartRows(from images: [ImageItem], availableWidth: CGFloat, thumbnailSize: CGFloat) -> [FixedGridRow] {
         var rows: [FixedGridRow] = []
         let spacing: CGFloat = 10
         
         var imageIndex = 0
         while imageIndex < images.count {
-            let remainingImages = Array(images[imageIndex...])
-            
             // 使用贪心算法快速找到最优行
+            // 注意：这里传原数组 + 起始下标，而不是 Array(images[imageIndex...])——
+            // 后者每轮都会复制剩余的 n-imageIndex 个元素，是平方级开销的来源。
             let optimalRow = createGreedyRow(
-                images: remainingImages,
+                images: images,
+                startIndex: imageIndex,
                 availableWidth: availableWidth,
                 targetHeight: thumbnailSize,
                 spacing: spacing
@@ -89,17 +102,25 @@ class LayoutCalculatorOpt: LayoutCalculatorProtocol {
     // MARK: - 贪心算法核心
     
     /// 贪心算法：寻找最优行布局
-    private func createGreedyRow(images: [ImageItem], availableWidth: CGFloat, targetHeight: CGFloat, spacing: CGFloat) -> FixedGridRow {
-        guard !images.isEmpty else { 
-            return FixedGridRow(images: [], imageSizes: [], totalWidth: 0) 
+    ///
+    /// - Parameters:
+    ///   - images: **完整**图片数组（不再是从当前行开始的剩余切片）
+    ///   - startIndex: 当前行从 `images` 的哪一项开始取
+    ///
+    /// 之所以改成"完整数组 + 起点下标"，是为了避免调用方在循环里反复切片（见 `createSmartRows`）。
+    /// 本函数内部只在尝试候选行时截取至多 `maxImagesPerRow`（10）个元素，代价可忽略。
+    private func createGreedyRow(images: [ImageItem], startIndex: Int, availableWidth: CGFloat, targetHeight: CGFloat, spacing: CGFloat) -> FixedGridRow {
+        guard startIndex < images.count else {
+            return FixedGridRow(images: [], imageSizes: [], totalWidth: 0)
         }
         
         var bestRow: FixedGridRow?
         var bestScore: CGFloat = -1
+        let remainingCount = images.count - startIndex
         
         // 贪心策略：尝试不同数量的图片，选择得分最高的方案
-        for imageCount in 1...min(images.count, LayoutConstraints.maxImagesPerRow) {
-            let testImages = Array(images.prefix(imageCount))
+        for imageCount in 1...min(remainingCount, LayoutConstraints.maxImagesPerRow) {
+            let testImages = Array(images[startIndex..<(startIndex + imageCount)])
             let candidateRow = createJustifiedRow(images: testImages, availableWidth: availableWidth, targetHeight: targetHeight, spacing: spacing)
             
             let score = calculateRowScore(row: candidateRow, availableWidth: availableWidth)
@@ -115,7 +136,7 @@ class LayoutCalculatorOpt: LayoutCalculatorProtocol {
             }
         }
         
-        return bestRow ?? createSingleImageRow(image: images[0], availableWidth: availableWidth, targetHeight: targetHeight, spacing: spacing)
+        return bestRow ?? createSingleImageRow(image: images[startIndex], availableWidth: availableWidth, targetHeight: targetHeight, spacing: spacing)
     }
     
     /// 计算行布局得分 - 贪心策略的核心
