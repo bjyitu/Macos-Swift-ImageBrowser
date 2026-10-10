@@ -29,6 +29,8 @@ class ImageActionService {
     // 执行删除图片操作
     func deleteImageItem(_ imageItem: ImageItem, completion: @escaping (Bool, Error?) -> Void) {
         NSWorkspace.shared.recycle([imageItem.url]) { urls, error in
+            // P0-1 修复：NSWorkspace 的回调在任意线程执行，这里显式切回主线程，
+            // 保证对 AppState.images 的读取与写入都发生在主线程上。
             DispatchQueue.main.async {
                 if let error = error {
                     // 显示错误信息
@@ -41,7 +43,9 @@ class ImageActionService {
                     completion(false, error)
                 } else {
                     // 从应用状态中移除图片
-                    AppState.shared.images.removeAll { $0.id == imageItem.id }
+                    // P0-1 修复：已切回主线程，仍统一通过 AppState 的主线程写入接口，
+                    // 避免绕过主线程校验直接改动 images。
+                    AppState.shared.removeImages { $0.id == imageItem.id }
                     
                     // 如果删除的是当前选中的图片，清除选中状态
                     if AppState.shared.browserWindowState.selectedImageID == imageItem.id {
@@ -87,25 +91,33 @@ class ImageActionService {
     
     // MARK: - 删除后导航处理
     
-    // 删除图片并处理后续导航
+    /// 删除图片并处理后续导航。
+    ///
+    /// **P0-4 修复**：导航目标不再用"删除前的下标"来定位。
+    ///
+    /// 原实现先记下 `deletedIndex`，而 `NSWorkspace.recycle` 的完成回调是**异步**的；
+    /// 等回调执行时 `AppState.shared.images` 可能已经被别的操作改变
+    ///（连续删除多张、切换目录重新加载等），此时再拿旧下标去索引当前数组，
+    /// 就会选中一个完全无关的图片（或取到越界/错位的结果）。
+    ///
+    /// 现在改为**在删除前记下相邻图片的 `id`**（后继优先，其次前驱），
+    /// 删除完成后按 `id` 在当前列表中重新定位。`id` 是 `ImageItem` 的稳定标识，
+    /// 不受插入 / 删除 / 重排影响，因此即使列表已经变化也能找到真正的邻居。
     func deleteImageItemWithNavigation(
-        _ imageItem: ImageItem, 
-        from viewType: ViewType,
+        _ imageItem: ImageItem,
         completion: @escaping (Bool, ImageItem?, Error?) -> Void
     ) {
-        // 先获取被删除图片的索引
-        let deletedIndex = AppState.shared.images.firstIndex(of: imageItem)
+        // P0-4 修复：先记下"同位置下一张 / 否则上一张"的稳定标识。
+        // 这里读取 AppState 发生在主线程（本方法由删除确认回调在主线程调用），
+        // 符合 P0-1 的线程契约。
+        let neighbors = Self.neighborIDs(of: imageItem, in: AppState.shared.images)
         
         // 执行实际的删除操作
         deleteImageItem(imageItem) { success, error in
             if success {
                 // 处理删除后的导航逻辑
                 DispatchQueue.main.async {
-                    let nextImage = self.handleNavigationAfterDeletion(
-                        deletedImage: imageItem,
-                        deletedIndex: deletedIndex,
-                        viewType: viewType
-                    )
+                    let nextImage = self.handleNavigationAfterDeletion(neighbors: neighbors)
                     completion(true, nextImage, nil)
                 }
             } else {
@@ -114,30 +126,51 @@ class ImageActionService {
         }
     }
     
-    // 处理删除图片后的导航逻辑
+    /// 记录被删除图片的相邻项标识（P0-4 修复新增）。
+    ///
+    /// - Returns: `successor` 对应原实现"同位置下一张"的语义（删除后占据原位置的那张），
+    ///   `predecessor` 对应"删除的是最后一张时回退到上一张"。两者都不存在说明
+    ///   被删图片不在当前列表中。
+    private static func neighborIDs(
+        of imageItem: ImageItem,
+        in images: [ImageItem]
+    ) -> (successor: UUID?, predecessor: UUID?) {
+        guard let index = images.firstIndex(of: imageItem) else {
+            return (nil, nil)
+        }
+        
+        let successor = index + 1 < images.count ? images[index + 1].id : nil
+        let predecessor = index > 0 ? images[index - 1].id : nil
+        return (successor, predecessor)
+    }
+    
+    /// 处理删除图片后的导航逻辑（P0-4 修复：改为按 `id` 在当前列表中重新定位）
     private func handleNavigationAfterDeletion(
-        deletedImage: ImageItem,
-        deletedIndex: Int?,
-        viewType: ViewType
+        neighbors: (successor: UUID?, predecessor: UUID?)
     ) -> ImageItem? {
+        let images = AppState.shared.images
+        
         // 如果删除后没有图片了
-        guard !AppState.shared.images.isEmpty else {
+        guard !images.isEmpty else {
             // 清除选中状态
             AppState.shared.browserWindowState.selectedImageID = nil
-            
-            // 发送通知更新窗口标题
-            NotificationManager.shared.post(name: .updateBrowserWindowTitle)
+            // P1-14 修复：不再发 `.updateBrowserWindowTitle` 通知——列表窗口标题
+            // 已由 AppDelegate 直接订阅 `AppState.shared.$images` 自动刷新。
             return nil
         }
         
+        // P0-4 修复：按删除前记下的 id 重新定位，而不是用旧下标直接索引。
+        // 优先级与原实现保持一致：同位置下一张（后继）→ 上一张（前驱）→ 兜底第一张。
+        // 若两者都找不到（例如删除期间整个列表已被换掉/重新加载），同样兜底到第一张。
         var nextImage: ImageItem?
-        
-        // 根据视图类型处理删除后的导航
-        switch viewType {
-        case .browser:
-            nextImage = handleBrowserViewNavigationAfterDeletion(deletedIndex: deletedIndex)
-        case .detail:
-            nextImage = handleDetailViewNavigationAfterDeletion(deletedIndex: deletedIndex)
+        if let successorID = neighbors.successor,
+           let successor = images.first(where: { $0.id == successorID }) {
+            nextImage = successor
+        } else if let predecessorID = neighbors.predecessor,
+                  let predecessor = images.first(where: { $0.id == predecessorID }) {
+            nextImage = predecessor
+        } else {
+            nextImage = images.first
         }
         
         // 更新选中状态
@@ -145,48 +178,11 @@ class ImageActionService {
             AppState.shared.browserWindowState.selectedImageID = image.id
         }
         
-        // 发送通知更新窗口标题
-        NotificationManager.shared.post(name: .updateBrowserWindowTitle)
+        // P1-14 修复：不再发 `.updateBrowserWindowTitle` 通知。
+        // 删除本身会改变 `AppState.shared.images`，AppDelegate 订阅的 `$images`
+        // 已经会刷新列表窗口标题；原来这里再发一次属于重复通道。
         
         return nextImage
-    }
-    
-    // 浏览器视图删除后的导航处理
-    private func handleBrowserViewNavigationAfterDeletion(deletedIndex: Int?) -> ImageItem? {
-        if let index = deletedIndex {
-            if index < AppState.shared.images.count {
-                // 选择下一张（原来位置的图片）
-                return AppState.shared.images[index]
-            } else if index > 0 {
-                // 如果删除的是最后一张，选择上一张
-                return AppState.shared.images[index - 1]
-            }
-        }
-        
-        // 如果无法获取索引，选择第一张图片
-        return AppState.shared.images.first
-    }
-    
-    // 详情视图删除后的导航处理
-    private func handleDetailViewNavigationAfterDeletion(deletedIndex: Int?) -> ImageItem? {
-        if let index = deletedIndex {
-            if index < AppState.shared.images.count {
-                // 优先选择下一张（原来位置的图片）
-                return AppState.shared.images[index]
-            } else if index > 0 {
-                // 如果删除的是最后一张，选择上一张
-                return AppState.shared.images[index - 1]
-            }
-        }
-        
-        // 如果无法获取索引，选择第一张图片
-        return AppState.shared.images.first
-    }
-    
-    // 视图类型枚举
-    enum ViewType {
-        case browser
-        case detail
     }
     
     // MARK: - 统一导航处理

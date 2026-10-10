@@ -10,7 +10,9 @@ extension Notification.Name {
     static let openBrowserWindow = Notification.Name("com.imagebrowser.openBrowserWindow")
     static let openDetailWindow = Notification.Name("com.imagebrowser.openDetailWindow")
     static let showLaunchWindow = Notification.Name("com.imagebrowser.showLaunchWindow")
-    static let updateBrowserWindowTitle = Notification.Name("com.imagebrowser.updateBrowserWindowTitle")
+    // P1-14 修复：`.updateBrowserWindowTitle` 已移除。
+    // 列表窗口标题改由 AppDelegate 直接订阅 `AppState.shared.$images` 刷新，
+    // 该通知的发送方与订阅方均已不存在（原便捷方法的 title 参数也从未被使用）。
     static let scrollWheel = Notification.Name("com.imagebrowser.scrollWheel")
     static let openImageFile = Notification.Name("com.imagebrowser.openImageFile")
     static let reloadImages = Notification.Name("com.imagebrowser.reloadImages")
@@ -154,11 +156,9 @@ class NotificationManager: ObservableObject {
         post(name: .scrollToTop)
     }
     
-    /// 发送更新浏览器窗口标题通知
-    /// - Parameter title: 窗口标题
-    func updateBrowserWindowTitle(_ title: String) {
-        post(name: .updateBrowserWindowTitle, userInfo: ["title": title])
-    }
+    // P1-14 修复：原 `updateBrowserWindowTitle(_ title:)` 已移除。
+    // 它的 `title` 参数从未被使用（接收方永远按 AppState 重算），
+    // 且订阅方已改为直接观察 `AppState.shared.$images`。
     
     /// 发送显示启动窗口通知
     func showLaunchWindow() {

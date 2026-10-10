@@ -8,7 +8,9 @@ private enum AutoPlayConstants {
 }
 
 struct ImageDetailView: View {
-    @StateObject private var viewModel = ImageDetailViewModel()
+    // P0-3 修复：移除原先的默认值 `= ImageDetailViewModel()`，
+    // 改由下方的 init 通过 StateObject 惰性持有，确保没有"提前构造"的旁路。
+    @StateObject private var viewModel: ImageDetailViewModel
     @State private var scale: CGFloat = 1.0
     @State private var isPlaying = false
     @State private var buttonScale: CGFloat = 1.0
@@ -17,14 +19,26 @@ struct ImageDetailView: View {
     @State private var progress: Double = 0.0
     
     init(imageItem: ImageItem) {
-        // 创建ViewModel并加载图片
-        let viewModel = ImageDetailViewModel()
-        viewModel.loadImage(imageItem)
-        _viewModel = StateObject(wrappedValue: viewModel)
+        // P0-3 修复：原实现在这里直接 `let viewModel = ImageDetailViewModel(); viewModel.loadImage(imageItem)`，
+        // 而 loadImage 会在调用线程上同步完成「读盘 + 解码 + 缩放 + 锐化 + 预加载前后各 2 张」。
+        // 由于 AppDelegate.openDetailWindow 是「先构造 ImageDetailView、后创建 NSWindow」，
+        // 这些重活全部发生在窗口存在之前，窗口要等解码结束才出现，打开大图时明显卡顿。
+        //
+        // 现在 init 只做两件轻量的事：
+        //   1. 记下待加载的图片，真正的加载推迟到 onAppear 中异步进行；
+        //   2. 把 ViewModel 交给 StateObject 惰性持有——wrappedValue 接收的是 autoclosure，
+        //      这里不会立即构造 ImageDetailViewModel。
+        _viewModel = StateObject(wrappedValue: ImageDetailViewModel())
         
         // 标记为首次打开，需要定位窗口
         _isFirstOpen = State(initialValue: true)
+        
+        // 待加载图片由 init 传入，在 onAppear 中触发异步加载
+        self.initialImageItem = imageItem
     }
+    
+    /// 由 init 传入、等待在 `onAppear` 中开始异步加载的图片（P0-3 修复新增）
+    private let initialImageItem: ImageItem
     
     @State private var isFirstOpen: Bool
     
@@ -97,6 +111,29 @@ struct ImageDetailView: View {
         progress = 0.0 // 重置进度
     }
     
+    /// 本视图所在详情窗口的**权威引用**（P1-14 修复）。
+    ///
+    /// 原实现用
+    /// `NSApp.windows.first(where: { $0.contentViewController is NSHostingController<ImageDetailView> })`
+    /// 反查自己的窗口。实测 `NSApp.windows` 中最旧的详情窗口排在最前（当时可见的反而在最后），
+    /// 因此从第二个详情窗口起，该反查**必然**命中一个已隐藏的陈旧窗口，导致：
+    ///   - 标题被写到看不见的陈旧窗口上（可见窗口的标题永远停留在建窗时的裸文件名）
+    ///   - `switchToBrowserView()` 的 `orderOut` 打在错窗口上
+    ///
+    /// 详情窗口本来就由 `AppDelegate` 持有（`detailWindow`），直接取那个引用即可，
+    /// 不需要任何按类型/按层级的猜测。
+    private var hostWindow: NSWindow? {
+        // 首选：AppDelegate 持有的权威引用
+        if let window = (NSApp.delegate as? AppDelegate)?.detailWindow {
+            return window
+        }
+        // 兜底：按类型反查。P1-6 之后详情窗口已复用为单例，候选唯一，
+        // 因此不会再出现原先"必然命中最早那个陈旧窗口"的问题。
+        return NSApp.windows.first {
+            $0.contentViewController is NSHostingController<ImageDetailView>
+        }
+    }
+    
     // 切换到列表页
     private func switchToBrowserView() {
         // 停止自动播放和进度计时器
@@ -105,9 +142,8 @@ struct ImageDetailView: View {
         }
         
         // 隐藏当前窗口
-        if let window = NSApp.windows.first(where: { $0.contentViewController is NSHostingController<ImageDetailView> }) {
-            window.orderOut(nil)
-        }
+        // P1-14 修复：改为直接使用 AppDelegate 持有的详情窗口引用
+        hostWindow?.orderOut(nil)
         
         // 显示列表窗口但不重新加载图片
         NotificationManager.shared.post(
@@ -129,7 +165,9 @@ struct ImageDetailView: View {
     
     // 执行删除图片操作
     private func deleteImageItem(_ imageItem: ImageItem) {
-        ImageActionService.shared.deleteImageItemWithNavigation(imageItem, from: .detail) { success, nextImage, error in
+        // P0-4：删除了已无意义的 `from: .detail` 参数——原实现里两种视图类型
+        // 走的是完全相同的导航逻辑，差异只在下面这段对 nextImage 为 nil 的处理。
+        ImageActionService.shared.deleteImageItemWithNavigation(imageItem) { success, nextImage, error in
             if success {
                 DispatchQueue.main.async {
                     // 清理被删除图片的缓存
@@ -183,9 +221,9 @@ struct ImageDetailView: View {
     
     private func updateWindowTitle() {
         DispatchQueue.main.async {
-            if let window = NSApp.windows.first(where: { $0.contentViewController is NSHostingController<ImageDetailView> }) {
-                window.title = windowTitle
-            }
+            // P1-14 修复：直接写 AppDelegate 持有的详情窗口，不再按类型反查
+            // （反查会命中最早的陈旧窗口，见 hostWindow 的说明）
+            self.hostWindow?.title = self.windowTitle
         }
     }
     
@@ -202,14 +240,24 @@ struct ImageDetailView: View {
             if let image = viewModel.fullImage {
                 Image(nsImage: image)
                     .resizable()
-                    .interpolation(.high)
+                    // .interpolation(.high)
                     .antialiased(true)
-                    .contrast(1.10)
-                    .brightness(0.02)
+                    .contrast(1.05)
+                    .brightness(0.03)
                     .aspectRatio(contentMode: .fit)
                     .clipped()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .edgesIgnoringSafeArea(.all)
+            } else if viewModel.isLoadingImage {
+                // P0-3 修复：解码已异步化，"fullImage == nil" 不再等同于加载失败。
+                // 必须单独区分「加载中」与「确实加载失败」，否则异步化之后
+                // 每次切图/首次打开都会先闪一下误导性的"图片未找到"。
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle())
+                        .foregroundColor(.gray)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 VStack(spacing: 16) {
                     ProgressView()
@@ -233,28 +281,28 @@ struct ImageDetailView: View {
             }
         }
         .onAppear {
+            // P0-3 修复：图片加载由 init 移到这里触发，此时解码已异步化，不会阻塞窗口显示。
+            // 加 nil 判断是为了保证只加载一次——onAppear 可能因窗口重新显示等原因再次触发，
+            // 而重复加载会白白丢弃用户当前的浏览位置。
+            if viewModel.imageItem == nil {
+                viewModel.loadImage(initialImageItem)
+            }
+            
             // 初始设置窗口标题
+            // 注意顺序：必须在上面的 loadImage 之后，因为窗口标题依赖 viewModel.imageItem，
+            // 而 imageItem 是在 loadImage 中同步赋值的。
             updateWindowTitle()
             
-            // 只在首次打开时调整窗口大小和位置
+            // 首次定位窗口。
+            //
+            // 注意：详情窗口的尺寸现在主要由 `AppDelegate.openDetailWindow` 在打开时
+            // 显式设定（P1-6 回归修复），这里只作为兜底再应用一次。
+            // 保留它的价值在于：此刻窗口已经可见/成为 key，`NSScreen.main` 必然是该窗口
+            // 所在的屏幕，可用来自我校正；两处用的是同一个尺寸计算函数，结果一致、不会打架。
             if isFirstOpen {
-                // 使用多种方式尝试获取窗口
-                var targetWindow: NSWindow?
-                
-                // 方法1: 尝试使用keyWindow
-                if let keyWindow = NSApp.keyWindow {
-                    targetWindow = keyWindow
-                }
-                // 方法2: 查找最新创建的包含ImageDetailView的窗口
-                else if let window = NSApp.windows.last(where: { $0.contentViewController is NSHostingController<ImageDetailView> }) {
-                    targetWindow = window
-                }
-                // 方法3: 查找主窗口
-                else if let mainWindow = NSApp.mainWindow {
-                    targetWindow = mainWindow
-                }
-                
-                if let window = targetWindow {
+                // P1-14 修复：不再用「keyWindow → 类型反查 → mainWindow」三重猜测定位窗口，
+                // 直接使用 AppDelegate 持有的详情窗口引用（hostWindow 内置兜底）。
+                if let window = hostWindow {
                     // 延迟一点时间确保窗口完全初始化
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
                         self.adjustWindowSizeForImage(window: window)

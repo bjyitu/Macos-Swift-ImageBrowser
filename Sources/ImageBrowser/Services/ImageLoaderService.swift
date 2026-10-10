@@ -26,11 +26,19 @@ class ImageLoaderService {
     ///   - folderURL: 文件夹URL
     ///   - shouldReuseItems: 是否复用已存在的ImageItem对象
     ///   - sortType: 排序类型
+    ///   - reusableItems: 可复用的已有 ImageItem 列表（P0-1 修复新增）。
+    ///     **该列表必须由调用方在主线程从 `AppState.shared.images` 取出后传入。**
+    ///     本方法运行在后台线程，绝不能跨线程直接读取 `AppState`：
+    ///     修复前这里直接读 `AppState.shared.selectedFolderURL` 与
+    ///     `AppState.shared.images`，而主线程同时在 `append`/`removeAll`，
+    ///     属于典型的数据竞争，且 `group.wait()` 期间列表随时可能变短，
+    ///     可能引发数组越界。改成"主线程取快照、后台只读参数"后彻底消除该竞争。
     /// - Returns: 加载的图片项数组
     func loadImagesFromFolder(
         _ folderURL: URL,
         shouldReuseItems: Bool = true,
-        sortType: SortType = .fileName
+        sortType: ImageSortType = .name,
+        reusableItems: [ImageItem] = []
     ) -> [ImageItem] {
         print("Loading images from folder: \(folderURL.path)")
         
@@ -66,13 +74,21 @@ class ImageLoaderService {
             }
         }
         
+        // 1010需求：一次性收集所有子目录自身的"加入时间"（目录绝对路径 → 时间）。
+        // 这样"按添加时间"排序时目录块也能按时间排，而不是永远按名称。
+        // 查表在 ImageItem 构造时按路径使用，避免每张图片重复 stat 同一批目录。
+        let directoryAddedDates = collectDirectoryAddedDates(from: contents)
+        
         var existingImages: [ImageItem] = []
         var existingImageMap: [String: ImageItem] = [:]
         
         if shouldReuseItems {
-            // 检查是否是同一目录且已有图片列表
-            let isSameDirectory = AppState.shared.selectedFolderURL == folderURL
-            existingImages = isSameDirectory ? AppState.shared.images : []
+            // P0-1 修复：原实现在此读取 AppState.shared.selectedFolderURL 与
+            // AppState.shared.images。本方法运行在后台线程，而主线程可能正在
+            // 对这些属性做整体赋值 / append / removeAll，构成数据竞争。
+            // 现在"是否同一目录"的判断与快照的提取都上移到主线程调用方完成，
+            // 这里只使用传入的不可变快照 reusableItems。
+            existingImages = reusableItems
             
             // 创建URL到现有ImageItem的映射，方便快速查找
             for imageItem in existingImages {
@@ -105,7 +121,9 @@ class ImageLoaderService {
                 if shouldReuseItems, let existingItem = existingImageMap[url.path] {
                     item = existingItem
                 } else {
-                    item = ImageItem(url: url)
+                    // 1010需求：带上根目录与目录时间表，让 ImageItem 算好
+                    // relativeDirectory / directoryAddedDates（目录优先排序要用）
+                    item = ImageItem(url: url, rootURL: folderURL, directoryAddedDates: directoryAddedDates)
                 }
                 
                 if let item = item {
@@ -119,12 +137,11 @@ class ImageLoaderService {
         group.wait()
         
         // 根据排序类型进行排序
-        switch sortType {
-        case .fileName:
-            imageItems.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        case .random:
-            imageItems = randomizeImageOrder(imageItems)
-            // 缓存随机排序的结果
+        // 1010需求：排序逻辑已抽到 `ImageSorter`（纯函数），既能在这里用，
+        // 也能让"切换排序方式"在不重新扫盘的情况下对内存中的列表复用同一套规则。
+        imageItems = ImageSorter.sort(imageItems, by: sortType)
+        if sortType == .random {
+            // 缓存随机排序的结果，保证同一目录再次打开时随机顺序稳定
             cacheSortedImages(imageItems, for: folderURL)
         }
         
@@ -135,25 +152,25 @@ class ImageLoaderService {
     
 
     
-    /// 随机化图片顺序
-    private func randomizeImageOrder(_ images: [ImageItem]) -> [ImageItem] {
-        guard images.count > 1 else { return images }
-        
-        var shuffled = images
-        
-        for i in stride(from: shuffled.count - 1, through: 1, by: -1) {
-            let j = Int.random(in: 0...i)
-            shuffled.swapAt(i, j)
+    /// 收集目录自身的"加入其父目录的时间"（1010需求）。
+    ///
+    /// 目录数量通常远小于图片数量，因此一次性采样并建表（绝对路径 → 时间），
+    /// 供所有 `ImageItem` 按路径查用，避免每张图片重复 stat 同一批目录。
+    private func collectDirectoryAddedDates(from contents: [URL]) -> [String: Date] {
+        var result: [String: Date] = [:]
+        for url in contents {
+            // 枚举时已预取 .isDirectoryKey，这里的判断很轻
+            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else {
+                continue
+            }
+            result[url.standardizedFileURL.path] = ImageItem.addedDate(of: url)
         }
-        
-        return shuffled
+        return result
     }
     
-    /// 排序类型枚举
-    enum SortType {
-        case fileName
-        case random
-    }
+    /// 随机化图片顺序
+    // 1010需求：`randomizeImageOrder` 与嵌套的 `SortType` 枚举已移除——
+    // 洗牌与三种排序统一由 `ImageSorter` 提供，避免两处实现各自演化。
     
     /// 缓存随机排序的图片列表
     private func cacheSortedImages(_ images: [ImageItem], for folderURL: URL) {
@@ -231,7 +248,7 @@ class ImageLoaderService {
     ///   - cachedItems: 缓存的图片项数组
     ///   - sortType: 排序类型
     /// - Returns: 更新后的图片项数组
-    private func performIncrementalUpdate(for folderURL: URL, cachedItems: [ImageItem], sortType: SortType) -> [ImageItem] {
+    private func performIncrementalUpdate(for folderURL: URL, cachedItems: [ImageItem], sortType: ImageSortType) -> [ImageItem] {
         let fileManager = FileManager.default
         
         // 创建已缓存图片的路径到ImageItem的映射
@@ -243,6 +260,20 @@ class ImageLoaderService {
         // 获取当前文件夹中的所有图片文件
         var newItems: [ImageItem] = []
         var updatedItems: [ImageItem] = []
+        
+        // 1010需求：目录时间表。这条路径没有像主路径那样先收集 contents，
+        // 因此单独走一遍枚举取目录（此路径仅在随机排序的缓存失效时触发，代价可接受）。
+        var directoryAddedDates: [String: Date] = [:]
+        if let directoryEnumerator = fileManager.enumerator(
+            at: folderURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            while let url = directoryEnumerator.nextObject() as? URL {
+                guard (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+                directoryAddedDates[url.standardizedFileURL.path] = ImageItem.addedDate(of: url)
+            }
+        }
         
         do {
             let resourceKeys: [URLResourceKey] = [.isDirectoryKey, .nameKey]
@@ -262,7 +293,8 @@ class ImageLoaderService {
                         updatedItems.append(cachedItem)
                     } else {
                         // 新文件，创建新的ImageItem
-                        let newItem = ImageItem(url: fileURL)
+                        // 1010需求：带上根目录与目录时间表
+                        let newItem = ImageItem(url: fileURL, rootURL: folderURL, directoryAddedDates: directoryAddedDates)
                         newItems.append(newItem)
                         updatedItems.append(newItem)
                     }
@@ -274,12 +306,7 @@ class ImageLoaderService {
             return loadImagesFromFolder(folderURL, shouldReuseItems: false, sortType: sortType)
         }
         
-        // 根据排序类型排序
-        switch sortType {
-        case .fileName:
-            return updatedItems.sorted { $0.url.lastPathComponent < $1.url.lastPathComponent }
-        case .random:
-            return updatedItems.shuffled()
-        }
+        // 根据排序类型排序（1010需求：统一走 ImageSorter）
+        return ImageSorter.sort(updatedItems, by: sortType)
     }
 }

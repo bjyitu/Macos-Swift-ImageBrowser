@@ -17,11 +17,13 @@ struct ImageBrowserApp: App {
     
     var body: some Scene {
         // 启动窗口
+        // P0-2 修复：原先在 `LaunchView` 上挂了 `.onAppear { onAppear() }` 来注册 6 个
+        // 全局通知订阅。该回调每次触发都会**追加**一批新订阅且永不释放，
+        // 而 `LaunchView` 所在的启动窗口会被 `hideAllWindows()` 反复 `orderOut`，
+        // 回调可能多次触发，导致同一条通知被重复处理。
+        // 应用级订阅已移入 `AppDelegate.applicationDidFinishLaunching`（整生命周期只注册一次）。
         WindowGroup {
             LaunchView()
-                .onAppear {
-                    onAppear()
-                }
         }
         .windowStyle(.hiddenTitleBar)
         // 防止文件打开时创建新窗口
@@ -40,33 +42,55 @@ struct ImageBrowserApp: App {
             }
         }
     }
+}
+
+// AppDelegate 用于处理 macOS 12 的窗口管理
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    var browserWindow: NSWindow?
+    var detailWindow: NSWindow?
     
-    // 监听通知
-    func onAppear() {
+    /// P0-2 修复：应用级通知订阅的持有者。
+    /// 由 `AppDelegate`（生命周期等同于整个进程）持有，而不再放在 `App`/`View` 的
+    /// `@State` 里——后者会在每次 `onAppear` 时被追加新订阅且无法回收。
+    private var cancellables = Set<AnyCancellable>()
+    
+    /// 注册应用级通知订阅。
+    ///
+    /// **P0-2 修复**：本方法只在 `applicationDidFinishLaunching` 中调用一次，
+    /// 从结构上保证「整个应用生命周期内恰好订阅一次」。
+    ///
+    /// 原实现把这些订阅放在 `ImageBrowserApp.onAppear()` 里，由 `LaunchView`
+    /// 的 `.onAppear` 驱动；而启动窗口会被 `hideAllWindows()` 反复 `orderOut`、
+    /// 再由 `openLaunchWindow()` 重新前置，`.onAppear` 可能多次触发，
+    /// 于是每次触发都会多出一批订阅——同一条通知会被处理多次。
+    private func setupNotificationSubscriptions() {
+        let manager = NotificationManager.shared
+        
         // 监听打开文件夹选择对话框的通知
-        NotificationManager.shared.publisher(for: .openImageFolder)
-            .sink { _ in
-                appDelegate.openImageFolder()
+        manager.publisher(for: .openImageFolder)
+            .sink { [weak self] _ in
+                self?.openImageFolder()
             }
             .store(in: &cancellables)
         
-        NotificationManager.shared.publisher(for: .openBrowserWindow)
-            .sink { notification in
+        // 监听打开列表窗口的通知
+        manager.publisher(for: .openBrowserWindow)
+            .sink { [weak self] notification in
                 // 默认情况下需要重新加载图片，除非明确指定不需要
                 let shouldReloadImages = (notification.userInfo?["shouldReloadImages"] as? Bool) ?? true
-                appDelegate.openBrowserWindow(shouldReloadImages: shouldReloadImages)
+                self?.openBrowserWindow(shouldReloadImages: shouldReloadImages)
             }
             .store(in: &cancellables)
         
         // 监听打开详情窗口的通知
-        NotificationManager.shared.publisher(for: .openDetailWindow)
-            .sink { notification in
+        manager.publisher(for: .openDetailWindow)
+            .sink { [weak self] notification in
                 if let userInfo = notification.userInfo,
                    let imageItem = userInfo["imageItem"] as? ImageItem {
                     AppState.shared.selectedImageItem = imageItem
                     print("Opening detail window for image: \(imageItem.name)")
                     // 打开详情窗口
-                    appDelegate.openDetailWindow(with: imageItem)
+                    self?.openDetailWindow(with: imageItem)
                 } else {
                     print("Failed to extract imageItem from notification")
                 }
@@ -74,11 +98,11 @@ struct ImageBrowserApp: App {
             .store(in: &cancellables)
         
         // 监听直接打开图片文件的通知
-        NotificationManager.shared.publisher(for: .openImageFile)
-            .sink { notification in
+        manager.publisher(for: .openImageFile)
+            .sink { [weak self] notification in
                 if let userInfo = notification.userInfo,
                    let fileURL = userInfo["fileURL"] as? URL {
-                    appDelegate.openImageFile(fileURL)
+                    self?.openImageFile(fileURL)
                 } else {
                     print("Failed to extract fileURL from notification")
                 }
@@ -86,29 +110,30 @@ struct ImageBrowserApp: App {
             .store(in: &cancellables)
         
         // 监听显示启动窗口的通知
-        NotificationManager.shared.publisher(for: .showLaunchWindow)
-            .sink { _ in
+        manager.publisher(for: .showLaunchWindow)
+            .sink { [weak self] _ in
                 print("Opening launch window")
-                appDelegate.openLaunchWindow()
+                self?.openLaunchWindow()
             }
             .store(in: &cancellables)
         
-        // 监听更新浏览器窗口标题的通知
-        NotificationManager.shared.publisher(for: .updateBrowserWindowTitle)
-            .sink { _ in
-                print("Updating browser window title")
-                appDelegate.updateBrowserWindowTitle()
+        // **P1-14 修复**：列表窗口标题改为直接订阅 `AppState.images`，单一数据源。
+        //
+        // 原来由三条通道驱动同一个 `updateBrowserWindowTitle()`：
+        //   1. `ImageBrowserView.onChange(of: appState.images)` 发 `.updateBrowserWindowTitle` 通知
+        //   2. `ImageActionService` 在删除导航后发同一通知
+        //   3. `openBrowserWindow` 里直接调用
+        // 其中 1 与 2 会在"删除图片"时重复触发（删除本身就会改变 images）。
+        //
+        // 现在只要 `images` 发生变化就会自动刷新标题，无论变化来自哪里、视图是否可见。
+        // 由于 P0-1 已保证 `images` 的所有写入都发生在主线程，这里的订阅也在主线程回调。
+        AppState.shared.$images
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] images in
+                self?.applyBrowserWindowTitle(imageCount: images.count)
             }
             .store(in: &cancellables)
     }
-    
-    @State private var cancellables = Set<AnyCancellable>()
-}
-
-// AppDelegate 用于处理 macOS 12 的窗口管理
-class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    var browserWindow: NSWindow?
-    var detailWindow: NSWindow?
     
     func applicationWillFinishLaunching(_ notification: Notification) {
         // 注册Apple事件处理器（用于"Open With"功能）
@@ -123,6 +148,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 应用启动完成后的初始化工作
         print("Application did finish launching")  
+        
+        // P0-2 修复：应用级通知订阅在这里注册，整生命周期恰好一次。
+        // 必须放在下方那些 `return`（Apple Event / 命令行参数提前打开文件）**之前**，
+        // 否则带文件参数启动时这些订阅根本不会被注册，后续通知全部失效。
+        setupNotificationSubscriptions()
+        
         // 添加本地滚轮事件监听（针对应用内窗口）
         NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
             // 只在详情窗口显示时处理滚轮事件
@@ -192,52 +223,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case .file:
                 if ImageLoaderService.shared.isImageFile(url) {
                     print("filetype: image, Opening image file: \(url.path)")
-                    self.openImageFileWithRetry(url, attempt: 0)
+                    // P1-13：不再走 `openImageFileWithRetry`——那个"重试"包装存在的唯一理由
+                    // 是"同步扫描完可能仍找不到图片项"，现在扫描已异步化且会等目标出现，
+                    // 重试机制随之作废（已删除）。这里直接复用 `openImageFile`。
+                    self.openImageFile(url)
                     return
                 }
             case .directory:
                 print("filetype: folder, Opening folder: \(url.path)")
-                self.loadImagesFromFolder(url)
-                self.openBrowserWindow(shouldReloadImages: false)
+                // P1-9 修复：不再在主线程同步预加载整个目录。
+                //
+                // 原实现是 `loadImagesFromFolder(url)`（阻塞至全部文件头读完）
+                // 再 `openBrowserWindow(shouldReloadImages: false)`，意图是"窗口一出现就带着数据"。
+                // 但第一次开窗时 `shouldReloadImages` 参数在 `openBrowserWindow` 里并不生效
+                //（它只在窗口已存在的分支被读取），`ImageBrowserView.onAppear` 仍会重新加载
+                // 并先 `setImages([])` 清空列表——那次同步扫描的结果被直接丢弃，纯属白等。
+                //
+                // 现在与菜单 / 拖拽路径完全统一：只设好目录，交给 `openBrowserWindow`，
+                // 由 `ImageBrowserView` 在后台加载并显示"加载中"。
+                AppState.shared.selectedFolderURL = url
+                self.openBrowserWindow(shouldReloadImages: true)
                 return
             case .unknown:
                 print("Unknown file type: \(url.path)")
-            }
-        }
-    }
-    
-    // 带重试机制的图片文件打开方法
-    private func openImageFileWithRetry(_ fileURL: URL, attempt: Int) {
-        let maxRetryAttempts = 3
-        guard attempt < maxRetryAttempts else {
-            print("Max retry attempts reached for file: \(fileURL.path)")
-            return
-        }
-        
-        let delay = calculateDelay(for: attempt)
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            // 获取文件所在目录
-            let folderURL = fileURL.deletingLastPathComponent()
-            
-            // 加载目录中的所有图片
-            self.loadImagesFromFolder(folderURL)
-            
-            // 从已加载的图片列表中找到对应的图片项
-            if let imageItem = AppState.shared.images.first(where: { $0.url.path == fileURL.path }) {
-                AppState.shared.selectedImageItem = imageItem
-                AppState.shared.browserWindowState.selectedImageID = imageItem.id
-                
-                // 隐藏其他窗口并打开详情窗口
-                self.hideAllWindows()
-                self.openDetailWindow(with: imageItem)
-                
-                // 确保应用成为前台应用
-                NSApp.activate(ignoringOtherApps: true)
-                print("Successfully opened image file: \(fileURL.path)")
-            } else {
-                print("Retry attempt \(attempt + 1) for file: \(fileURL.path)")
-                self.openImageFileWithRetry(fileURL, attempt: attempt + 1)
             }
         }
     }
@@ -255,18 +263,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     // 延迟计算
-    private func calculateDelay(for attempt: Int) -> Double {
-        switch attempt {
-        case 0:
-            return 0.01 // 立即重试
-        case 1:
-            return 0.02  // 短暂延迟
-        case 2:
-            return 0.03 // 更长延迟
-        default:
-            return 0
-        }
-    }
+    // P1-13：`calculateDelay(for:)` 原为 `openImageFileWithRetry` 的退避重试服务，
+    // 随该重试包装一并删除（10/20/30ms 的延迟本就过短，无法规避任何真实问题）。
     
     // 文件类型枚举
     private enum FileType {
@@ -368,24 +366,97 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     func updateBrowserWindowTitle() {
+        applyBrowserWindowTitle(imageCount: AppState.shared.images.count)
+    }
+    
+    /// 按图片数量设置列表窗口标题。
+    ///
+    /// P1-14 修复：抽出为独立方法，供两处复用——
+    /// 建窗时的首次设置，以及订阅 `AppState.shared.$images` 后的自动刷新。
+    private func applyBrowserWindowTitle(imageCount: Int) {
         guard let window = browserWindow else { return }
-        
-        // 获取图片数量
-        let imageCount = AppState.shared.images.count
-        let title = imageCount > 0 ? "共 \(imageCount) 张图片" : "图片浏览器"
-        
-        window.title = title
+        window.title = imageCount > 0 ? "共 \(imageCount) 张图片" : "图片浏览器"
+    }
+    
+    /// 按图片尺寸为详情窗口定尺寸并居中。
+    ///
+    /// **P1-6 回归修复**：详情窗口从"每次新建"改为"复用单例"之后，
+    /// `window.contentViewController = ...` 会让 AppKit 按新内容的最小 fitting size
+    /// 收缩窗口；而这会儿图片还没解码完（P0-3 之后解码已异步化），视图处于
+    /// "加载中"占位态（`frame(minWidth: 50, minHeight: 50)`），于是窗口被缩到极小。
+    /// 原实现每次都新建窗口并 `center()`，恰好掩盖了这个问题。
+    ///
+    /// 现在由窗口的持有者（AppDelegate）在打开时按 `ImageItem.size` 直接定尺寸，
+    /// 不再依赖视图 onAppear 里那套"首次定位"启发式。
+    private func sizeDetailWindow(_ window: NSWindow, for imageItem: ImageItem, screenFrame: CGRect) {
+        let size = ImageDetailViewModel.windowSize(
+            forImageSize: imageItem.size,
+            screenVisibleFrame: screenFrame
+        )
+        let origin = CGPoint(
+            x: screenFrame.origin.x + (screenFrame.width - size.width) / 2,
+            y: screenFrame.origin.y + (screenFrame.height - size.height) / 2
+        )
+        window.setFrame(NSRect(origin: origin, size: size), display: true)
     }
     
     func openDetailWindow(with imageItem: ImageItem) {
+        // P1-6 回归修复：必须在 hideAllWindows() **之前**取屏幕。
+        // 隐藏全部窗口后就没有 key window 了，`NSScreen.main` 会退回"带菜单栏的主屏"，
+        // 多显示器下会把详情窗口摆到错误的屏幕上。
+        let screenFrame = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1024, height: 768)
+        
         // 隐藏其他窗口
         hideAllWindows()
         
-        // 创建新的详情窗口
+        // 每次都构造新的内容视图；窗口实例本身复用（理由见下）
         let contentView = ImageDetailView(imageItem: imageItem)
         let hostingController = NSHostingController(rootView: contentView)
         
-        // 使用固定尺寸，让ImageDetailView的缩放逻辑负责调整窗口大小
+        // **P1-6 回归修复**：禁止 NSHostingController 反向决定窗口尺寸。
+        // 详情窗口复用后，替换 contentViewController 会触发 AppKit 按新内容的最小
+        // fitting size 收缩窗口（此时视图还在"加载中"占位态），表现为"窗口非常小"。
+        // 窗口尺寸改由下面显式设置，因此这里也不需要它自动撑开。
+        if #available(macOS 13.0, *) {
+            hostingController.sizingOptions = []
+        }
+        
+        // **P1-6 修复：复用同一个详情窗口，不再每次 NSWindow(...) 新建。**
+        //
+        // 原实现每次打开都新建窗口并覆盖 detailWindow，旧窗口既不 close() 也不置 nil。
+        // 实测（AppKit 真实运行）：被 orderOut 的窗口仍被 AppKit 强引用持有，
+        // 且一直留在 NSApp.windows 中——丢掉全部强引用后 weak 引用依然存活。
+        //
+        // 而本应用的详情页退出路径恰好是"隐藏"而非"关闭"：
+        // 双击 / 回车 → switchToBrowserView() → orderOut(nil)。
+        // 因此窗口累积不是异常路径，而是设计的必然结果。
+        //
+        // 连带的代价比"多几个 NSWindow"更重：
+        //   窗口 → NSHostingController<ImageDetailView> → @StateObject ImageDetailViewModel
+        //   → 其私有的 NSCache（上限 20 张 / 2000MB）
+        // 每 abandon 一个详情窗口就可能连带留下最多 20 张全尺寸解码图。
+        //
+        // 复用窗口的同时替换 contentViewController：旧的 NSHostingController 会被释放，
+        // 它持有的 ViewModel 与图片缓存随之释放，不再累积。
+        if let window = detailWindow {
+            window.contentViewController = hostingController
+            window.title = "\(imageItem.name)"
+            
+            // 先同步定好尺寸再显示：避免先闪出一个被内容收缩的小窗口
+            sizeDetailWindow(window, for: imageItem, screenFrame: screenFrame)
+            window.makeKeyAndOrderFront(nil)
+            
+            // 再于下一轮 runloop 重新应用一次尺寸：
+            // 内容替换触发的自动布局可能在本轮之后再次改动窗口尺寸，
+            // 这里确保最终尺寸仍然是按图片算出来的那个。
+            DispatchQueue.main.async {
+                window.makeKeyAndOrderFront(nil)
+                self.sizeDetailWindow(window, for: imageItem, screenFrame: screenFrame)
+            }
+            return
+        }
+        
+        // 首次打开：创建窗口，并配置只需做一次的外观属性
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1024, height: 600),
             styleMask: [.titled, .fullSizeContentView],
@@ -398,7 +469,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // 设置标题栏背景色为透明
         window.titlebarSeparatorStyle = .none
         window.contentViewController = hostingController
-        window.center()
+        
+        // P1-6 回归修复：原来这里是 window.center()（固定 1024×600）。
+        // 改为直接按图片尺寸定尺寸并居中，与复用路径保持一致。
+        sizeDetailWindow(window, for: imageItem, screenFrame: screenFrame)
         
         // 设置窗口层级，确保显示在其他窗口前面
         // window.level = .floating
@@ -408,6 +482,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // 确保窗口成为键窗口，这对于回车键触发的窗口特别重要
         DispatchQueue.main.async {
             window.makeKeyAndOrderFront(nil)
+            self.sizeDetailWindow(window, for: imageItem, screenFrame: screenFrame)
         }
         
         // 启用窗口背景拖拽功能
@@ -448,40 +523,64 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // 获取文件所在目录
         let folderURL = fileURL.deletingLastPathComponent()
         
-        // 加载目录中的所有图片
-        loadImagesFromFolder(folderURL)
-        
-        // 从已加载的图片列表中找到对应的图片项（使用URL路径比较）
-        guard let imageItem = AppState.shared.images.first(where: { $0.url.path == fileURL.path }) else {
-            print("Error: Could not find image in loaded list: \(fileURL.path)")
-            print("Available images:")
-            for img in AppState.shared.images {
-                print("  - \(img.url.path)")
+        // P1-9 修复：目录扫描移出主线程。
+        //
+        // 原实现在这里**同步**调用 `loadImagesFromFolder`——它会递归枚举整个目录、
+        // 并发读完全部文件头（`group.wait()` 阻塞至最后一个完成）才返回。
+        // 20000 张的目录实测约 0.42 s（热缓存），期间主线程完全无法处理事件，
+        // 而且还没到 `openDetailWindow`，所以用户连窗口都看不到。
+        //
+        // 现在改为后台加载，完成后回主线程定位目标图片并打开详情窗口。
+        // 注意：仍然要在列表里取那个"正牌" ImageItem 才能开详情页——
+        // 详情页的上一张/下一张导航与 "i/n" 标题都依赖它在 AppState.images 中的
+        // 位置，因此不能自己临时 new 一个（那会因 UUID 不同而定位失败）。
+        loadImagesInBackground(folderURL) { [weak self] imageItems in
+            guard let self = self else { return }
+            
+            // 从已加载的图片列表中找到对应的图片项（使用URL路径比较）
+            guard let imageItem = imageItems.first(where: { $0.url.path == fileURL.path }) else {
+                print("Error: Could not find image in loaded list: \(fileURL.path)")
+                return
             }
-            return
+            
+            AppState.shared.selectedImageItem = imageItem
+            // 同步设置列表页的选中状态
+            AppState.shared.browserWindowState.selectedImageID = imageItem.id
+            
+            // 隐藏其他窗口并打开详情窗口
+            self.hideAllWindows()
+            self.openDetailWindow(with: imageItem)
+            
+            // 确保应用成为前台应用
+            NSApp.activate(ignoringOtherApps: true)
         }
-        
-        AppState.shared.selectedImageItem = imageItem
-        // 同步设置列表页的选中状态
-        AppState.shared.browserWindowState.selectedImageID = imageItem.id
-        
-        // 隐藏其他窗口并打开详情窗口
-        hideAllWindows()
-        openDetailWindow(with: imageItem)
-        
-        // 确保应用成为前台应用
-        NSApp.activate(ignoringOtherApps: true)
     }
     
-
-    
-    private func loadImagesFromFolder(_ folderURL: URL) {
-        // 使用共享服务加载图片，保持原有的复用和排序行为
-        let imageItems = ImageLoaderService.shared.loadImagesFromFolder(folderURL, shouldReuseItems: true, sortType: .random)
+    /// P1-9 修复：把目录扫描从主线程移到后台队列，完成后回主线程写入 `AppState`。
+    ///
+    /// - Parameter completion: 在主线程回调，参数为本次加载出的图片列表。
+    private func loadImagesInBackground(_ folderURL: URL, completion: @escaping ([ImageItem]) -> Void) {
+        // P0-1 线程契约：可复用的旧 ImageItem 快照必须在主线程取好再带进后台。
+        let reusableItems = AppState.shared.selectedFolderURL == folderURL ? AppState.shared.images : []
+        // 1010需求：排序方式同样在主线程读取后带进后台
+        let sortType = AppState.shared.sortType
         
-        // 更新AppState中的图片列表
-        AppState.shared.images = imageItems
-        AppState.shared.selectedFolderURL = folderURL
+        DispatchQueue.global(qos: .userInitiated).async {
+            // 使用共享服务加载图片，保持原有的复用和排序行为
+            let imageItems = ImageLoaderService.shared.loadImagesFromFolder(
+                folderURL,
+                shouldReuseItems: true,
+                sortType: sortType,
+                reusableItems: reusableItems
+            )
+            
+            DispatchQueue.main.async {
+                // P0-1 修复：统一走 AppState 的主线程写入接口，不再直接赋值 images。
+                AppState.shared.setImages(imageItems)
+                AppState.shared.selectedFolderURL = folderURL
+                completion(imageItems)
+            }
+        }
     }
     
     // MARK: - NSWindowDelegate

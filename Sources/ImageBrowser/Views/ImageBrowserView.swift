@@ -11,11 +11,6 @@ struct ImageBrowserView: View {
     private let layoutCalculator = LayoutCalculatorOpt()
     @State private var hasReceivedGeometry = false
     
-    // 用于存储通知观察者
-    @State private var notificationObserver: NSObjectProtocol?
-    @State private var cancellables = Set<AnyCancellable>()
-    @State private var scrollToTopAction: (() -> Void)?
-    
     var body: some View {
         VStack(spacing: 0) {
             if viewModel.isLoading {
@@ -29,12 +24,22 @@ struct ImageBrowserView: View {
             }
         }
         .navigationTitle(appState.images.isEmpty ? "图片浏览器" : "共 \(appState.images.count) 张图片")
-        .onChange(of: appState.images) { _ in
-            // 当图片数量变化时，标题会自动更新
-            // 发送通知更新窗口标题
-            NotificationManager.shared.post(name: .updateBrowserWindowTitle)
-        }
+        // P1-14 修复：原先在这里 `.onChange(of: appState.images)` 发 `.updateBrowserWindowTitle`
+        // 通知来刷新列表窗口标题。该通道已由 AppDelegate 直接订阅 `AppState.shared.$images`
+        // 取代——单一数据源，不会再和删除路径重复触发。
         .frame(minWidth: 1200, minHeight: 700)
+        // 1010需求：排序按钮，**只出现在列表页**，位于**左下角**（播放按钮在详情页的右下角，
+        // 这里取其镜像位置）。
+        //
+        // 注意它挂在最外层 VStack 的 overlay 上，因此位于 `ImageGridView` 的
+        // `.drawingGroup()` **之外**——否则会被离屏渲染吞掉、点不到。
+        .overlay(alignment: .bottomLeading) {
+            // 1010需求：排序选择器，只出现在列表页，位于**左下角**（播放按钮在详情页的右下角，
+            // 这里取其镜像位置）。三个按钮竖列，无弹层；外观参数见 SortModeSelector。
+            SortModeSelector(sortType: $appState.sortType)
+                .padding(.leading, 20)
+                .padding(.bottom, 20)
+        }
         // .edgesIgnoringSafeArea(.top) // 可以将列表向上提一点,但是移动窗口时会激活图片ondrag
         .background(UnifiedKeyboardResponder(
             keyboardContext: KeyboardActionService.createBrowserKeyboardContext(
@@ -44,9 +49,6 @@ struct ImageBrowserView: View {
             )
         ))
         .onAppear {
-            // 设置通知监听器
-            setupNotificationListeners()
-            
             // 如果已经有选中的文件夹，则加载图片
             if let folderURL = appState.selectedFolderURL {
                 viewModel.loadImages(from: folderURL)
@@ -58,27 +60,30 @@ struct ImageBrowserView: View {
                 viewModel.loadImages(from: folderURL)
             }
         }
-        // .onDisappear {
-        //     // 清理通知监听器
-        //     if let observer = notificationObserver {
-        //         NotificationCenter.default.removeObserver(observer)
-        //     }
-        // }
+        // P0-2 修复：通知订阅改用 `.onReceive`，不再用 `onAppear` + `@State cancellables`。
+        //
+        // 原写法的两个问题：
+        //   1. **重复订阅**：`setupNotificationListeners()` 每次 `onAppear` 都新建一个
+        //      `sink` 并追加进 `cancellables`。本应用频繁用 `hideAllWindows()`
+        //      (`orderOut`) / `makeKeyAndOrderFront` 切换窗口，`onAppear` 可能多次触发，
+        //      于是同一条 `.reloadImages` 通知会被处理 N 次，造成重复加载。
+        //   2. **永不释放**：负责取消订阅的 `onDisappear` 整块被注释掉，订阅随窗口一直存在。
+        //
+        // `.onReceive` 的订阅生命周期由 SwiftUI 绑定到视图自身：不会累积，
+        // 也不需要手动 `store` / `cancel`，因此从结构上消除了这两个问题。
+        .onReceive(NotificationManager.shared.publisher(for: .reloadImages)) { notification in
+            if let userInfo = notification.userInfo,
+               let folderURL = userInfo["folderURL"] as? URL {
+                viewModel.loadImages(from: folderURL)
+            } else if let folderURL = appState.selectedFolderURL {
+                viewModel.loadImages(from: folderURL)
+            }
+        }
     }
     
-    private func setupNotificationListeners() {
-        // 使用NotificationManager监听重新加载图片的通知
-        NotificationManager.shared.publisher(for: .reloadImages)
-            .sink { notification in
-                if let userInfo = notification.userInfo,
-                   let folderURL = userInfo["folderURL"] as? URL {
-                    self.viewModel.loadImages(from: folderURL)
-                } else if let folderURL = self.appState.selectedFolderURL {
-                    self.viewModel.loadImages(from: folderURL)
-                }
-            }
-            .store(in: &cancellables)
-    }
+    // P0-2 修复：`setupNotificationListeners()` 已删除，
+    // `.reloadImages` 的订阅改用体上的 `.onReceive`（见 body），
+    // 避免 `onAppear` 每次触发都追加一个永不释放的订阅。
     
     // 显示删除确认对话框
     private func showDeleteConfirmation(for imageItem: ImageItem) {
@@ -91,7 +96,9 @@ struct ImageBrowserView: View {
     
     // 执行删除图片操作
     private func deleteImageItem(_ imageItem: ImageItem) {
-        ImageActionService.shared.deleteImageItemWithNavigation(imageItem, from: .browser) { success, nextImage, error in
+        // P0-4：删除了已无意义的 `from: .browser` 参数——原实现里两种视图类型
+        // 走的是完全相同的导航逻辑，只有调用方对 nil 的处理不同。
+        ImageActionService.shared.deleteImageItemWithNavigation(imageItem) { success, nextImage, error in
             if let error = error {
                 print("删除失败: \(error.localizedDescription)")
             }
