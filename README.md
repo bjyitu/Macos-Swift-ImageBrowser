@@ -2,16 +2,10 @@
 
 一个使用 SwiftUI 开发的 macOS 图片浏览器应用，支持浏览、查看和管理图片文件。
 
-## 功能特点
+<img width="780" height="1095" alt="readme1" src="https://github.com/user-attachments/assets/00d55fc4-903f-4baf-9081-6e7f3e17c1cc" />
 
-- 🖼️ 支持多种图片格式（JPG、PNG、GIF、BMP、TIFF、WebP等）
-- 📁 支持打开整个文件夹并浏览其中的图片
-- 🔍 缩略图预览和快速加载
-- 🖱️ 支持鼠标滚轮切换图片
-- ⌨️ 键盘快捷键支持
-- 🗑️ 支持删除图片到回收站
-- 🎵 自动播放功能（幻灯片模式）
-- 📐 自适应窗口大小
+<img width="1137" height="780" alt="readme2" src="https://github.com/user-attachments/assets/606eb57f-3d0d-4e93-b832-833977f70246" />
+
 
 ## 系统要求
 
