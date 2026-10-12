@@ -310,7 +310,18 @@ class ImageDetailViewModel: ObservableObject {
 
         // 转换为NSImage并应用锐化（使用优化后的GPU加速方法）
         let finalNSImage = NSImage(cgImage: resizedImage, size: scaledSize)
-        return finalNSImage.sharpened(intensity: self.sharpenIntensity, radius: self.sharpenRadius) ?? finalNSImage
+        // ★ 关键：根据 scale 决定实际锐化强度
+        //   - 缩小（scale < 1）：完整锐化，补偿预模糊
+        //   - 放大（scale > 1）：按 1/scale 衰减，避免放大 Lanczos ringing
+        // let smallToBigIntensity: Double = scale > 1.0
+        //     ? max(1.2, min(1.3, sharpenIntensity / sqrt(Double(scale))))
+        //     : sharpenIntensity
+
+        let smallToBigRadius: Double = scale > 1.0
+            ? max(1.2, min(1.3, sharpenRadius / sqrt(Double(scale))))
+            : sharpenRadius
+
+        return finalNSImage.sharpened(intensity: self.sharpenIntensity, radius: smallToBigRadius) ?? finalNSImage
     }
 
     // 直接缩放CGImage的方法,之前使用CGContext,缩放质量要差一些,.bak文件可以直接节省这个方法,质量稍差
