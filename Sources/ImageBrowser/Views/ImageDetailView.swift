@@ -17,7 +17,7 @@ struct ImageDetailView: View {
     @State private var buttonOpacity: Double = 0.3
     @State private var autoPlayTimer: Timer?
     @State private var progress: Double = 0.0
-    
+
     init(imageItem: ImageItem) {
         // P0-3 修复：原实现在这里直接 `let viewModel = ImageDetailViewModel(); viewModel.loadImage(imageItem)`，
         // 而 loadImage 会在调用线程上同步完成「读盘 + 解码 + 缩放 + 锐化 + 预加载前后各 2 张」。
@@ -29,19 +29,19 @@ struct ImageDetailView: View {
         //   2. 把 ViewModel 交给 StateObject 惰性持有——wrappedValue 接收的是 autoclosure，
         //      这里不会立即构造 ImageDetailViewModel。
         _viewModel = StateObject(wrappedValue: ImageDetailViewModel())
-        
+
         // 标记为首次打开，需要定位窗口
         _isFirstOpen = State(initialValue: true)
-        
+
         // 待加载图片由 init 传入，在 onAppear 中触发异步加载
         self.initialImageItem = imageItem
     }
-    
+
     /// 由 init 传入、等待在 `onAppear` 中开始异步加载的图片（P0-3 修复新增）
     private let initialImageItem: ImageItem
-    
+
     @State private var isFirstOpen: Bool
-    
+
     // 切换到上一张图片
     private func showPreviousImage(stopPlayback: Bool = true) {
         ImageActionService.shared.navigateToPreviousImageInDetail(
@@ -52,7 +52,7 @@ struct ImageDetailView: View {
             updateWindowTitle: updateWindowTitle
         )
     }
-    
+
     // 切换到下一张图片
     private func showNextImage(stopPlayback: Bool = true) {
         ImageActionService.shared.navigateToNextImageInDetail(
@@ -69,11 +69,11 @@ struct ImageDetailView: View {
             }
         )
     }
-    
+
     // 切换播放/暂停状态
     private func togglePlayPause() {
         isPlaying.toggle()
-        
+
         if isPlaying {
             // 开始自动播放（包含进度更新）
             startAutoPlay()
@@ -82,35 +82,35 @@ struct ImageDetailView: View {
             stopAutoPlay()
         }
     }
-    
+
     // 开始自动播放
     private func startAutoPlay() {
         // 重置进度
         progress = 0.00
-        
+
         // 使用一个计时器同时处理进度更新和图片切换
         autoPlayTimer = Timer.scheduledTimer(withTimeInterval: AutoPlayConstants.progressUpdateInterval, repeats: true) { _ in
             // 更新进度
             self.progress += AutoPlayConstants.progressUpdateInterval / AutoPlayConstants.totalPlayInterval // 每progressUpdateInterval秒增加totalPlayInterval的1/5
-            
+
             // 检查是否达到总播放间隔
             if self.progress >= 0.98 {
                 // 重置进度
                 self.progress = 0.00
-                
+
                 // 切换到下一张图片，不停止自动播放
                 self.showNextImage(stopPlayback: false)
             }
         }
     }
-    
+
     // 停止自动播放
     private func stopAutoPlay() {
         autoPlayTimer?.invalidate()
         autoPlayTimer = nil
         progress = 0.0 // 重置进度
     }
-    
+
     /// 本视图所在详情窗口的**权威引用**（P1-14 修复）。
     ///
     /// 原实现用
@@ -133,36 +133,36 @@ struct ImageDetailView: View {
             $0.contentViewController is NSHostingController<ImageDetailView>
         }
     }
-    
+
     // 切换到列表页
     private func switchToBrowserView() {
         // 停止自动播放和进度计时器
         if isPlaying {
             togglePlayPause()
         }
-        
+
         // 隐藏当前窗口
         // P1-14 修复：改为直接使用 AppDelegate 持有的详情窗口引用
         hostWindow?.orderOut(nil)
-        
+
         // 显示列表窗口但不重新加载图片
         NotificationManager.shared.post(
             name: .openBrowserWindow,
             userInfo: ["shouldReloadImages": false]
         )
     }
-    
+
     // 删除当前图片
     private func deleteCurrentImage() {
         guard let imageItem = viewModel.imageItem else { return }
-        
+
         ImageActionService.shared.showDeleteConfirmation(for: imageItem) { confirmed in
             if confirmed {
                 self.deleteImageItem(imageItem)
             }
         }
     }
-    
+
     // 执行删除图片操作
     private func deleteImageItem(_ imageItem: ImageItem) {
         // P0-4：删除了已无意义的 `from: .detail` 参数——原实现里两种视图类型
@@ -173,7 +173,7 @@ struct ImageDetailView: View {
                     // 清理被删除图片的缓存
                     let cacheKey = imageItem.url.absoluteString as NSString
                     self.viewModel.imageCache.removeObject(forKey: cacheKey)
-                    
+
                     if let nextImage = nextImage {
                         // 切换到下一张或上一张图片
                         self.viewModel.switchToImage(nextImage, shouldAdjustWindow: false)
@@ -181,7 +181,7 @@ struct ImageDetailView: View {
                         // 如果没有图片了，关闭详情窗口并显示列表窗口
                         self.switchToBrowserView()
                     }
-                    
+
                     // 更新窗口标题
                     self.updateWindowTitle()
                 }
@@ -190,20 +190,20 @@ struct ImageDetailView: View {
             }
         }
     }
-    
+
     // 打开图片所在目录
     private func openImageDirectory() {
         guard let imageItem = viewModel.imageItem else { return }
-        
+
         ImageActionService.shared.openImageDirectory(for: imageItem)
     }
-    
+
     private var windowTitle: String {
         guard let imageItem = viewModel.imageItem else { return "" }
-        
+
         let maxTitleLength = 50
         var title = ""
-        
+
         if let index = AppState.shared.images.firstIndex(of: imageItem) {
             let currentIndex = index + 1
             let totalCount = AppState.shared.images.count
@@ -211,14 +211,14 @@ struct ImageDetailView: View {
         } else {
             title = imageItem.name
         }
-        
+
         // 统一处理长度限制
         if title.count > maxTitleLength {
             return String(title.prefix(maxTitleLength - 3)) + "..."
         }
         return title
     }
-    
+
     private func updateWindowTitle() {
         DispatchQueue.main.async {
             // P1-14 修复：直接写 AppDelegate 持有的详情窗口，不再按类型反查
@@ -226,21 +226,21 @@ struct ImageDetailView: View {
             self.hostWindow?.title = self.windowTitle
         }
     }
-    
+
     // 简化后的窗口调整方法，调用ViewModel的逻辑
     private func adjustWindowSizeForImage(window: NSWindow) {
         guard let imageItem = viewModel.imageItem else { return }
-        
+
         // 调用ViewModel的窗口调整逻辑
         viewModel.adjustWindowSizeForImage(window: window, imageItem: imageItem)
     }
-    
+
     var body: some View {
         Group {
             if let image = viewModel.fullImage {
                 Image(nsImage: image)
                     .resizable()
-                    // .interpolation(.high)
+                    .interpolation(.high)
                     .antialiased(true)
                     .contrast(1.05)
                     .brightness(0.03)
@@ -287,12 +287,12 @@ struct ImageDetailView: View {
             if viewModel.imageItem == nil {
                 viewModel.loadImage(initialImageItem)
             }
-            
+
             // 初始设置窗口标题
             // 注意顺序：必须在上面的 loadImage 之后，因为窗口标题依赖 viewModel.imageItem，
             // 而 imageItem 是在 loadImage 中同步赋值的。
             updateWindowTitle()
-            
+
             // 首次定位窗口。
             //
             // 注意：详情窗口的尺寸现在主要由 `AppDelegate.openDetailWindow` 在打开时
@@ -308,7 +308,7 @@ struct ImageDetailView: View {
                         self.adjustWindowSizeForImage(window: window)
                     }
                 }
-                
+
                 isFirstOpen = false // 标记为已定位
             }
         }
@@ -322,7 +322,7 @@ struct ImageDetailView: View {
         .onTapGesture(count: 2) {
             // 双击隐藏单页窗口并显示列表窗口
             print("Double-tap detected on detail view, hiding detail window and opening browser window")
-            
+
             // 调用switchToBrowserView方法，确保停止自动播放
             switchToBrowserView()
         }
@@ -333,7 +333,7 @@ struct ImageDetailView: View {
                 if isPlaying {
                     togglePlayPause()
                 }
-                
+
                 if event.deltaY > 0 {
                     // 向上滚动，显示上一张图片
                     showPreviousImage()
@@ -399,14 +399,14 @@ struct PlayPauseButton: View {
     let onToggle: () -> Void
     let onHover: (Bool) -> Void
     let onPress: () -> Void
-    
+
     var body: some View {
         ZStack {
             // 背景圆圈进度条
             // Circle()
             //     .stroke(Color.black.opacity(0.2), lineWidth: 2)
             //     .frame(width: 50, height: 50)
-            
+
             // 进度圆圈
             Circle()
                 .stroke(
@@ -426,7 +426,7 @@ struct PlayPauseButton: View {
                 // .rotationEffect(.degrees(-90))//从默认的3点钟方向转到12点钟方向
                 .opacity(isPlaying ? 1.0 : 0.0)
                 .rotationEffect(.degrees(isPlaying ? -90 + (progress * 360) : -90))
-            
+
             Button(action: {
                 onPress()
                 onToggle()

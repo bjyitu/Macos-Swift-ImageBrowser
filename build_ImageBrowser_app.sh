@@ -14,6 +14,13 @@ APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 
+# 应用图标
+# Info.plist 里声明的是 CFBundleIconFile = AppIcon（不带扩展名，macOS 会自动补 .icns），
+# 因此 Resources 里必须存在 AppIcon.icns —— 直接放 PNG 不会被 Finder / Dock 采纳。
+# 这里从下面的 1024×1024 源图生成 macOS 要求的多分辨率 icns。
+ICON_SOURCE="ImageBrowser.png"
+ICON_NAME="AppIcon"
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -114,6 +121,57 @@ build_app() {
     log_success "应用程序构建成功（通用二进制）"
 }
 
+# 生成应用图标：从 ICON_SOURCE（PNG）生成多分辨率 .icns
+#
+# 为什么不能直接拷 PNG：macOS 只认 .icns；而且必须是**多分辨率**的，
+# 否则在 Dock / 访达小图标尺寸下会模糊或显示异常。
+# 所以这里用 sips 从源图生成全部档位，再用 iconutil 打包。
+# 失败不中断构建（图标缺失只会退回系统默认图标）。
+build_app_icon() {
+    local src_png="$1"
+    local out_icns="$2"
+    
+    if [ ! -f "$src_png" ]; then
+        log_warning "未找到图标源文件 $src_png，跳过图标（应用将使用系统默认图标）"
+        return 0
+    fi
+    
+    if ! command -v iconutil &> /dev/null || ! command -v sips &> /dev/null; then
+        log_warning "缺少 sips / iconutil，跳过图标"
+        return 0
+    fi
+    
+    log_info "生成应用图标..."
+    
+    local tmp_dir iconset
+    tmp_dir="$(mktemp -d)"
+    iconset="$tmp_dir/$ICON_NAME.iconset"
+    mkdir -p "$iconset"
+    
+    # macOS 要求的全部档位：1x 与 @2x 成对，源图 1024×1024
+    local spec size name failed=false
+    for spec in \
+        "16 icon_16x16" "32 icon_16x16@2x" \
+        "32 icon_32x32" "64 icon_32x32@2x" \
+        "128 icon_128x128" "256 icon_128x128@2x" \
+        "256 icon_256x256" "512 icon_256x256@2x" \
+        "512 icon_512x512" "1024 icon_512x512@2x"
+    do
+        size="${spec%% *}"
+        name="${spec##* }"
+        # 用 || 兜住，避免 set -e 因单档失败而中断整个构建
+        sips -z "$size" "$size" "$src_png" --out "$iconset/$name.png" > /dev/null || failed=true
+    done
+    
+    if [ "$failed" = false ] && iconutil -c icns "$iconset" -o "$out_icns" 2>/dev/null; then
+        log_success "应用图标已生成: $ICON_NAME.icns（$(basename "$src_png") → 10 档尺寸）"
+    else
+        log_warning "图标生成失败，应用将使用系统默认图标"
+    fi
+    
+    rm -rf "$tmp_dir"
+}
+
 # 创建应用包
 create_app_bundle() {
     log_info "创建应用包结构..."
@@ -121,6 +179,9 @@ create_app_bundle() {
     # 创建应用包目录结构
     mkdir -p "$RELEASE_DIR/$APP_MACOS"
     mkdir -p "$RELEASE_DIR/$APP_RESOURCES"
+    
+    # 生成并放入应用图标（Resources/AppIcon.icns，与 Info.plist 的 CFBundleIconFile 对应）
+    build_app_icon "$ICON_SOURCE" "$RELEASE_DIR/$APP_RESOURCES/$ICON_NAME.icns"
     
     # 复制可执行文件
     cp "$BUILD_DIR/release/ImageBrowser" "$RELEASE_DIR/$APP_MACOS/"
@@ -174,6 +235,7 @@ show_build_result() {
     echo "📦 生成的文件:"
     echo "   可执行文件: $BUILD_DIR/release/ImageBrowser"
     echo "   应用包: $RELEASE_DIR/$APP_BUNDLE"
+    echo "   应用图标: $RELEASE_DIR/$APP_RESOURCES/$ICON_NAME.icns"
     echo ""
     echo "💡 使用方法:"
     echo "   直接运行: open $RELEASE_DIR/$APP_BUNDLE"
