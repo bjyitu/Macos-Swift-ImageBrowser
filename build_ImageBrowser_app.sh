@@ -18,7 +18,7 @@ APP_RESOURCES="$APP_CONTENTS/Resources"
 # Info.plist 里声明的是 CFBundleIconFile = AppIcon（不带扩展名，macOS 会自动补 .icns），
 # 因此 Resources 里必须存在 AppIcon.icns —— 直接放 PNG 不会被 Finder / Dock 采纳。
 # 这里从下面的 1024×1024 源图生成 macOS 要求的多分辨率 icns。
-ICON_SOURCE="ImageBrowser.png"
+ICON_SOURCE="Assets/ImageBrowser.png"
 ICON_NAME="AppIcon"
 
 # 颜色定义
