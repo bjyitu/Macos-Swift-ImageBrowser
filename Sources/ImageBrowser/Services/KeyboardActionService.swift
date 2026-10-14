@@ -23,6 +23,8 @@ class KeyboardActionService {
             context.onRightArrow?()
         case 49: // 空格键
             context.onSpace?()
+        case 15: // r 键：重新载入当前目录（拾取目录内新增 / 删除的图片）
+            context.onRefresh?()
         default:
             return false
         }
@@ -69,7 +71,12 @@ extension KeyboardActionService {
                 // 右箭头键：选择下一张图片
                 ImageActionService.shared.navigateToNextImageInBrowser()
             },
-            onSpace: nil // 浏览器视图不处理空格键
+            onSpace: nil, // 浏览器视图不处理空格键
+            onRefresh: {
+                // r 键：重新载入当前目录，拾取新增 / 删除的图片。
+                // 走通知而不是直接调用 viewModel，是为了让列表页与详情页共用同一条路径。
+                NotificationManager.shared.refreshImages()
+            }
         )
     }
     
@@ -88,7 +95,12 @@ extension KeyboardActionService {
             onBackslash: { openImageDirectory() },
             onLeftArrow: { showPreviousImage() },
             onRightArrow: { showNextImage() },
-            onSpace: { togglePlayPause() }
+            onSpace: { togglePlayPause() },
+            onRefresh: {
+                // r 键：详情页也支持刷新——不关闭详情窗口，后台重新载入当前目录，
+                // 标题栏会随装填进度更新（见需求 1）。
+                NotificationManager.shared.refreshImages()
+            }
         )
     }
 }
@@ -101,6 +113,8 @@ struct KeyboardContext {
     let onLeftArrow: (() -> Void)?
     let onRightArrow: (() -> Void)?
     let onSpace: (() -> Void)?
+    /// `r` 键：重新载入当前目录（拾取新增 / 删除的图片）
+    let onRefresh: (() -> Void)?
     
     init(
         onEnter: (() -> Void)? = nil,
@@ -108,7 +122,8 @@ struct KeyboardContext {
         onBackslash: (() -> Void)? = nil,
         onLeftArrow: (() -> Void)? = nil,
         onRightArrow: (() -> Void)? = nil,
-        onSpace: (() -> Void)? = nil
+        onSpace: (() -> Void)? = nil,
+        onRefresh: (() -> Void)? = nil
     ) {
         self.onEnter = onEnter
         self.onDelete = onDelete
@@ -116,6 +131,7 @@ struct KeyboardContext {
         self.onLeftArrow = onLeftArrow
         self.onRightArrow = onRightArrow
         self.onSpace = onSpace
+        self.onRefresh = onRefresh
     }
 }
 

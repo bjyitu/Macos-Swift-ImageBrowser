@@ -79,6 +79,12 @@ struct ImageBrowserView: View {
                 viewModel.loadImages(from: folderURL)
             }
         }
+        // `r` 快捷键：原地刷新当前目录（拾取新增 / 删除的图片）。
+        // 走 `refresh()` 而不是 `loadImages()`——前者**不清空列表**，
+        // 因此不会闪一帧空态，也不丢当前滚动位置与选中态。
+        .onReceive(NotificationManager.shared.publisher(for: .refreshImages)) { _ in
+            viewModel.refresh()
+        }
     }
     
     // P0-2 修复：`setupNotificationListeners()` 已删除，

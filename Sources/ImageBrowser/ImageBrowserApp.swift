@@ -87,7 +87,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .sink { [weak self] notification in
                 if let userInfo = notification.userInfo,
                    let imageItem = userInfo["imageItem"] as? ImageItem {
-                    AppState.shared.selectedImageItem = imageItem
                     print("Opening detail window for image: \(imageItem.name)")
                     // 打开详情窗口
                     self?.openDetailWindow(with: imageItem)
@@ -127,12 +126,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         //
         // 现在只要 `images` 发生变化就会自动刷新标题，无论变化来自哪里、视图是否可见。
         // 由于 P0-1 已保证 `images` 的所有写入都发生在主线程，这里的订阅也在主线程回调。
-        AppState.shared.$images
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] images in
-                self?.applyBrowserWindowTitle(imageCount: images.count)
-            }
-            .store(in: &cancellables)
+        //
+        // 第 1 步优化：标题现在还会显示"（已载入 N）"，因此除了 `images` 之外，
+        // 还要一并订阅 `isBatchFilling` / `loadTotalCount`——否则"装填结束"这一刻
+        // 不伴随 `images` 变化，标题上的"（已载入 N）"会一直留着不消失。
+        Publishers.CombineLatest3(
+            AppState.shared.$images,
+            AppState.shared.$isBatchFilling,
+            AppState.shared.$loadTotalCount
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _, _, _ in
+            self?.applyBrowserWindowTitle()
+        }
+        .store(in: &cancellables)
     }
     
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -366,16 +373,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     func updateBrowserWindowTitle() {
-        applyBrowserWindowTitle(imageCount: AppState.shared.images.count)
+        applyBrowserWindowTitle()
     }
     
     /// 按图片数量设置列表窗口标题。
     ///
     /// P1-14 修复：抽出为独立方法，供两处复用——
     /// 建窗时的首次设置，以及订阅 `AppState.shared.$images` 后的自动刷新。
-    private func applyBrowserWindowTitle(imageCount: Int) {
+    ///
+    /// 第 1 步优化：分批装填期间显示为 `共 总量 张图片（已载入 N）`，
+    /// 装填结束后自动退回 `共 总量 张图片`。口径由 `AppState` 统一提供
+    ///（`displayTotalCount` / `loadingCountSuffix`），保证与详情页标题一致。
+    private func applyBrowserWindowTitle() {
         guard let window = browserWindow else { return }
-        window.title = imageCount > 0 ? "共 \(imageCount) 张图片" : "图片浏览器"
+        let appState = AppState.shared
+        guard !appState.images.isEmpty else {
+            window.title = "图片浏览器"
+            return
+        }
+        window.title = "共 \(appState.displayTotalCount) 张图片\(appState.loadingCountSuffix)"
     }
     
     /// 按图片尺寸为详情窗口定尺寸并居中。
@@ -543,7 +559,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 return
             }
             
-            AppState.shared.selectedImageItem = imageItem
             // 同步设置列表页的选中状态
             AppState.shared.browserWindowState.selectedImageID = imageItem.id
             

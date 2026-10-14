@@ -52,4 +52,5 @@ swift run
    - `回车` - 返回列表视图
    - `Delete/Backspace` - 删除当前图片
    - `\` - 在 Finder 中显示当前图片
+   - `r` - 刷新图片列表
 

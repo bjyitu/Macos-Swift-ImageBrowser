@@ -11,6 +11,16 @@ struct ImageDetailView: View {
     // P0-3 修复：移除原先的默认值 `= ImageDetailViewModel()`，
     // 改由下方的 init 通过 StateObject 惰性持有，确保没有"提前构造"的旁路。
     @StateObject private var viewModel: ImageDetailViewModel
+
+    // **问题 3 修复（第 3 步）**：详情页此前**没有观察 `AppState`**——
+    // 它只读 `AppState.shared.images` 这个全局单例的属性，而这是一次普通读取，
+    // **不会建立 SwiftUI 依赖**。于是 `.onChange(of: AppState.shared.images)`
+    // 永远不会因为列表变化而触发（`.onChange` 是在**视图 body 重新求值时**比较新旧值的），
+    // 只有 body 因别的原因重绘时才会顺带触发——实际唯一常见的原因就是"切换图片"。
+    // 这就是"详情页标题里的数量不切图就不变"的根因。
+    // 补上这一行观察后，列表每次变化都会让 body 重绘，`.onChange` 才真正生效。
+    @ObservedObject private var appState = AppState.shared
+
     @State private var scale: CGFloat = 1.0
     @State private var isPlaying = false
     @State private var buttonScale: CGFloat = 1.0
@@ -204,10 +214,11 @@ struct ImageDetailView: View {
         let maxTitleLength = 50
         var title = ""
 
-        if let index = AppState.shared.images.firstIndex(of: imageItem) {
+        if let index = appState.images.firstIndex(of: imageItem) {
             let currentIndex = index + 1
-            let totalCount = AppState.shared.images.count
-            title = "\(currentIndex)/\(totalCount) \(imageItem.name)"
+            // 第 1 步优化：装填期间分母显示"总量（已载入 N）"，装填结束后只显示总量。
+            // 口径与列表页共用 `AppState` 的同一组属性，避免两处各写一遍导致不一致。
+            title = "\(currentIndex)/\(appState.displayTotalCount)\(appState.loadingCountSuffix) \(imageItem.name)"
         } else {
             title = imageItem.name
         }
@@ -242,7 +253,7 @@ struct ImageDetailView: View {
                     .resizable()
                     .interpolation(.high)
                     .antialiased(true)
-                    .contrast(1.05)
+                    .contrast(1.1)
                     .brightness(0.03)
                     .aspectRatio(contentMode: .fit)
                     .clipped()
@@ -312,9 +323,20 @@ struct ImageDetailView: View {
                 isFirstOpen = false // 标记为已定位
             }
         }
-        .onChange(of: AppState.shared.images) { _ in
-            // 当图片列表加载完成后，更新窗口标题
-            print("Images list changed, count: \(AppState.shared.images.count)")
+        .onChange(of: appState.images) { _ in
+            // 图片列表变化（分批装填推进 / 删除 / 重排）→ 刷新标题。
+            // **问题 3 修复**：原先这里写的是 `AppState.shared.images`，而本视图没有观察
+            // `AppState`，导致这个闭包几乎永不触发。现在本视图已 `@ObservedObject appState`，
+            // body 会随列表变化重绘，`.onChange` 才真正生效。
+            updateWindowTitle()
+        }
+        .onChange(of: appState.isBatchFilling) { _ in
+            // 装填"结束"这一刻不伴随 `images` 变化，必须单独订阅，
+            // 否则标题里的"（已载入 N）"会一直留着。
+            updateWindowTitle()
+        }
+        .onChange(of: appState.loadTotalCount) { _ in
+            // 总量确定的那一刻（列表还是空的）也要刷一次标题。
             updateWindowTitle()
         }
         .frame(minWidth: 50, minHeight: 50)

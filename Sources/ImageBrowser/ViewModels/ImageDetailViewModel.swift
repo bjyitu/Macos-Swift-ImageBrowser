@@ -340,7 +340,7 @@ class ImageDetailViewModel: ObservableObject {
         //   - 缩小（scale < 1）：完整锐化，补偿预模糊
         //   - 放大（scale > 1）：按 1/scale 衰减，避免放大 Lanczos ringing,目前用固定值
         let smallToBigIntensity: Double = scale > 1.0
-            ? 3
+            ? 3.2
             : sharpenIntensity
 
         let smallToBigRadius: Double = scale > 1.0

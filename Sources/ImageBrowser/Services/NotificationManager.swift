@@ -16,6 +16,9 @@ extension Notification.Name {
     static let scrollWheel = Notification.Name("com.imagebrowser.scrollWheel")
     static let openImageFile = Notification.Name("com.imagebrowser.openImageFile")
     static let reloadImages = Notification.Name("com.imagebrowser.reloadImages")
+    /// 重新载入当前目录，用于拾取目录内**新增 / 删除**的图片（`r` 快捷键）。
+    /// 与 `.reloadImages` 的区别：**不清空当前列表**，扫描期间旧列表继续显示。
+    static let refreshImages = Notification.Name("com.imagebrowser.refreshImages")
     static let adjustWindowSize = Notification.Name("com.imagebrowser.adjustWindowSize")
     static let scrollToTop = Notification.Name("com.imagebrowser.scrollToTop")
 }
@@ -130,6 +133,16 @@ class NotificationManager: ObservableObject {
             userInfo["folderURL"] = folderURL
         }
         post(name: .reloadImages, userInfo: userInfo)
+    }
+    
+    /// 重新载入当前目录（`r` 快捷键）。
+    ///
+    /// 与 `reloadImages(from:)` 走的是**不同的**处理路径：
+    /// - `reloadImages` → `ImageBrowserViewModel.loadImages`，会先清空列表（适合切换目录）；
+    /// - `refreshImages` → `ImageBrowserViewModel.refresh`，**不动当前列表**
+    ///   （适合"目录内容变了，原地刷新"）。
+    func refreshImages() {
+        post(name: .refreshImages)
     }
     
     /// 发送鼠标滚轮事件通知

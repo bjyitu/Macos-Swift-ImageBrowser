@@ -14,7 +14,13 @@ class ImageBrowserViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     
-    private var thumbnailLoadingTasks: [UUID: Task<Void, Never>] = [:]
+    // 说明：缩略图任务**不做取消跟踪**。
+    //
+    // `loadThumbnail` 内部没有任何取消检查，而 ImageIO 的缩略图生成一旦开始也无法
+    // 中途打断——"取消"只会让任务白跑一半，并不会真正省下工作。
+    // 旧代码里那个 `thumbnailLoadingTasks` 字典从来没有任何地方写入过
+    //（只被 `cancel()` + `removeAll()`），是一处死代码，已随本次修复移除。
+    // 切目录时旧目录的缩略图任务会自然跑完，不影响正确性。
     var cancellables = Set<AnyCancellable>()
     
     // 分批加载相关属性
@@ -39,17 +45,36 @@ class ImageBrowserViewModel: ObservableObject {
     func loadImages(from folderURL: URL) {
         isLoading = true
         errorMessage = nil
+
+        // 「重复打开同一目录」时复用已有的 `ImageItem`（第 4 步优化）。
+        //
+        // 为什么要在**这里**判断：`selectedFolderURL` 马上就会被覆盖，所以"是否同一目录"
+        // 必须在覆盖之前取。
+        //
+        // 为什么快照要在**主线程**取：P0-1 的线程契约要求 `AppState.images` 只在主线程读写。
+        // 本方法由 SwiftUI 的 onAppear / onChange / 通知回调在主线程调用，因此这里取快照是安全的；
+        // 快照随后作为一个**不可变数组**被带进后台，后台全程不触碰 `AppState`。
+        //
+        // 收益（在 19254 张 / 185 子目录的真实目录上实测）：
+        //   · 跳过全部已有文件的重新读头：646.8 ms → ≈0
+        //   · 整条重开路径约 789 ms → 约 142 ms
+        //   · 顺带保住已生成的缩略图——`ImageItem` 对象被复用，`thumbnailData` 还在，
+        //     网格不必重新解码上万张缩略图
+        let isSameFolder = (selectedFolderURL == folderURL)
+        let reusableItems = isSameFolder ? AppState.shared.images : []
+
         selectedFolderURL = folderURL
         
-        // 取消所有正在进行的任务
-        thumbnailLoadingTasks.values.forEach { $0.cancel() }
-        thumbnailLoadingTasks.removeAll()
+        // 取消正在进行的分批任务（缩略图任务不跟踪、也不取消，理由见属性声明处）
         batchLoadingTask?.cancel()
         
         // 重置分批加载状态
         allImageItems = []
         currentBatchIndex = 0
         isBatchLoading = false
+        
+        // 新一轮加载：清空标题栏的载入进度（此时总量尚未确定）
+        AppState.shared.resetLoadProgress()
         
         // 先清空当前图片列表，确保UI立即更新
         // P0-1 修复：本方法由 SwiftUI 的 onAppear / onChange / 通知回调在主线程调用，
@@ -63,13 +88,26 @@ class ImageBrowserViewModel: ObservableObject {
             guard let self = self else { return }
             
             // 使用共享服务加载图片
-            // P0-1 修复：本闭包运行在后台队列，因此这里**不复用**旧 ImageItem
-            //（shouldReuseItems: false），也不向加载服务传递任何 AppState 快照，
-            // 确保整个加载过程完全不触碰 AppState.images / selectedFolderURL。
+            //
+            // P0-1 修复的原始说明（已随第 4 步更新）：本闭包运行在后台队列，因此当时
+            // **不复用**旧 ImageItem（`shouldReuseItems: false`），以确保整个加载过程
+            // 完全不触碰 `AppState.images` / `selectedFolderURL`。
+            //
+            // 第 4 步优化：线程安全不再靠"不复用"来保证，而是靠"**可复用列表已由主线程
+            // 取成不可变快照传进来**"——`reusableItems` 是一个不带任何共享可变状态的数组，
+            // 后台只读它、不回写，因此依然不触碰 `AppState`。
+            //
+            // 改这一点的原因是实测发现"不复用"的代价极高：它会让每个已有文件都重新走一遍
+            // `ImageItem.init`（读文件头）。在 19254 张的真实目录上是 646.8 ms，
+            // 而整条路径里唯一必要的大头成本就来自这里。
+            //
+            // 注意：`reusableItems` 为空数组时（不同目录）行为与 `false` 完全等价——
+            // 服务内部按 URL 查表的字典为空，所有项都会新建。
             let imageItems = ImageLoaderService.shared.loadImagesFromFolder(
                 folderURL,
-                shouldReuseItems: false,
-                sortType: requestedSortType
+                shouldReuseItems: true,
+                sortType: requestedSortType,
+                reusableItems: reusableItems
             )
             
             DispatchQueue.main.async {
@@ -95,32 +133,96 @@ class ImageBrowserViewModel: ObservableObject {
         // 还没有加载完成时无需处理：
         // `loadImages` 的完成回调会以"当时的 AppState.sortType"为准重新排好。
         guard !allImageItems.isEmpty else { return }
-        
-        allImageItems = ImageSorter.sort(allImageItems, by: sortType)
-        
-        // 取消进行中的分批任务，从头重排展示
-        thumbnailLoadingTasks.values.forEach { $0.cancel() }
-        thumbnailLoadingTasks.removeAll()
-        batchLoadingTask?.cancel()
-        
-        // 先把第一批**同步**装上，再交给分批任务继续。
-        // 否则 setImages([]) 之后会先渲染一帧"没有找到图片"的空态，看起来像闪了一下。
-        // 这一批的缩略图早已挂在各 ImageItem 上，不需要重新解码。
-        let firstBatchEnd = min(batchSize, allImageItems.count)
-        AppState.shared.setImages(Array(allImageItems[0..<firstBatchEnd]))
-        currentBatchIndex = firstBatchEnd
-        isBatchLoading = false
-        startBatchLoading()
+        presentItems(ImageSorter.sort(allImageItems, by: sortType))
     }
     
-    private func startBatchLoading() {
+    /// 重新载入当前目录，用于拾取目录内**新增 / 删除**的图片（`r` 快捷键）。
+    ///
+    /// 与 `loadImages` 的关键区别：**全程不清空当前列表**。
+    /// - 扫描期间旧列表继续显示，不会闪一帧空态；
+    /// - 滚动位置与选中态保持不变（扫完后若某张图仍在，其 `ImageItem` 因复用而保持同一个 `id`）；
+    /// - 复用已有 `ImageItem`，未变动的文件不重读文件头、已生成的缩略图也保留。
+    ///
+    /// 之所以不复用 `loadImages`：它开头就会 `setImages([])`，那是为"切换目录"准备的
+    /// 语义；原地刷新时那样做会白白闪一下，并丢掉当前浏览位置。
+    func refresh() {
+        guard let folderURL = selectedFolderURL else { return }
+        // 只挡"另一次扫描"，不挡"分批装填"。
+        // 大目录的装填（含全部缩略图）可能持续很久，若把它也算作忙碌，
+        // `r` 会在这段时间里完全失效；而重入装填本身是安全的——
+        // `presentItems` 会取消旧的分批任务，代号核对会拦住过期任务写入。
+        guard !isLoading else { return }
+        
+        // P0-1 线程契约：快照与排序方式都在主线程取好后带进后台
+        let reusableItems = AppState.shared.images
+        let requestedSortType = AppState.shared.sortType
+        
+        isLoading = true
+        
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            
+            let imageItems = ImageLoaderService.shared.loadImagesFromFolder(
+                folderURL,
+                shouldReuseItems: true,
+                sortType: requestedSortType,
+                reusableItems: reusableItems
+            )
+            
+            DispatchQueue.main.async {
+                self.isLoading = false
+                // 与 loadImages 的收尾同口径：以**当前**排序方式为准
+                let currentSortType = AppState.shared.sortType
+                let items = currentSortType == requestedSortType
+                    ? imageItems
+                    : ImageSorter.sort(imageItems, by: currentSortType)
+                self.presentItems(items)
+            }
+        }
+    }
+    
+    /// 用一份**完整列表**刷新展示：替换第一批，其余交给分批任务补全。
+    ///
+    /// 为什么不直接 `setImages(完整列表)`：大目录一次性上屏会在单帧里重建上万个视图；
+    /// 分批推进则保持与首次加载相同的节奏。
+    ///
+    /// ⚠️ 关键：第一批是**直接上屏**的，绕过了分批循环（循环从 `currentBatchIndex` 开始，
+    /// 正好跳过这一段），而它的缩略图还没生成过。必须把它作为 `preloadedBatch`
+    /// 交给分批任务补做，否则这些格子会一直停在灰色占位符（问题 36）。
+    private func presentItems(_ items: [ImageItem]) {
+        allImageItems = items
+        
+        // 取消进行中的分批任务，从头重新展示（缩略图任务不跟踪、也不取消）
+        batchLoadingTask?.cancel()
+        
+        let firstBatchEnd = min(batchSize, items.count)
+        let firstBatch = Array(items[0..<firstBatchEnd])
+        AppState.shared.setImages(firstBatch)
+        currentBatchIndex = firstBatchEnd
+        isBatchLoading = false
+        startBatchLoading(preloadedBatch: firstBatch)
+    }
+    
+    /// 启动分批装载。
+    ///
+    /// - Parameter preloadedBatch: 已经由调用方直接上屏、但**尚未生成缩略图**的那一批。
+    ///   `resort` 会用到它：为了让排序切换不闪空态，第一批是直接 `setImages` 上去的，
+    ///   绕过了分批循环（循环从 `currentBatchIndex` 开始，正好跳过这一段），
+    ///   因此需要在这里把它的缩略图补上。传空数组表示"无需补做"（`loadImages` 的情形）。
+    private func startBatchLoading(preloadedBatch: [ImageItem] = []) {
         guard !isBatchLoading else { return }
         
         isBatchLoading = true
         batchGeneration += 1
         let generation = batchGeneration
+        
+        // 标题栏：总量已确定（= 完整列表长度），开始逐批推进。
+        // 这里写的是 `allImageItems.count` 而不是 `AppState.images.count`——
+        // 后者此时只装了前几批，正是要避免把它当成"总量"显示出来。
+        AppState.shared.beginBatchFilling(total: allImageItems.count)
+        
         batchLoadingTask = Task {
-            await loadImagesInBatches(generation: generation)
+            await loadImagesInBatches(generation: generation, preloadedBatch: preloadedBatch)
         }
     }
     
@@ -138,7 +240,16 @@ class ImageBrowserViewModel: ObservableObject {
     /// 过期就立刻退出、不再写入。
     private var batchGeneration = 0
     
-    private func loadImagesInBatches(generation: Int) async {
+    private func loadImagesInBatches(generation: Int, preloadedBatch: [ImageItem]) async {
+        // 先补做"已直接上屏那一批"的缩略图。
+        // 下面的循环从 currentBatchIndex（= 这一批之后）开始，覆盖不到它；
+        // 不补的话，切换排序后新进入前 N 名的图片会永远是占位符。
+        // `loadThumbnail` 开头对已有 `thumbnailData` 的项会直接返回，因此重复调用是幂等的——
+        // 已经生成过的那部分不会重复解码，只有缺的会被补上。
+        if !preloadedBatch.isEmpty {
+            await loadThumbnailsAsync(for: preloadedBatch)
+        }
+        
         while true {
             // 所有可变状态（currentBatchIndex / allImageItems / batchGeneration）
             // 都收在主线程读写，避免与 resort / loadImages 竞争。
@@ -177,6 +288,8 @@ class ImageBrowserViewModel: ObservableObject {
             // 若已被新任务顶替，清了会把新任务的标记误清掉。
             guard generation == self.batchGeneration else { return }
             self.isBatchLoading = false
+            // 标题栏：装填结束，退回只显示总量
+            AppState.shared.endBatchFilling()
         }
     }
     
