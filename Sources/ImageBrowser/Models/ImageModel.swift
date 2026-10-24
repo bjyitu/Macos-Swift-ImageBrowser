@@ -11,13 +11,20 @@ class ImageItem: Identifiable, ObservableObject, Equatable {
     
     // MARK: - 排序所需的元数据（1010需求）
     
-    /// 「添加时间」：该文件**加入其所在目录**的时间。
+    /// 「创建时间」：文件本身被创建（Birth）的时间。用于同一目录内的文件排序。
     ///
-    /// 优先取 `URLResourceKey.addedToDirectoryDate`——它的语义正是"加入此目录的时间"，
-    /// 且实测在修改文件时间后仍保持真实值（与 creationDate / contentModificationDate
-    /// 可区分）。该键在部分网络卷 / 非 APFS 卷上可能缺失，因此按
-    /// `addedToDirectoryDate → creationDate → contentModificationDate` 逐级兜底。
-    let addedAt: Date
+    /// 这里**不再使用** `addedToDirectoryDate`：它的语义是"加入此目录的时间"，
+    /// 一旦文件被批量复制 / 移动，整批条目的该值会被重置到操作发生的时刻，
+    /// 从而把真实的生成先后抹平。实测 `/output/2025-12-25`（5925 张图片）时，
+    /// 最新的一批 24 个文件的 `addedToDirectoryDate` 都落在同一秒（2026-10-24
+    /// 16:40:48），排序只能再退回名称；而它们的 `creationDate` 从 16:16 一直
+    /// 递增到 16:39——只有后者能反映"后生成的文件排在前面"这一需求。
+    /// 该目录中最新创建的 `1075013028769785_00001_.png` 正是被这批同一秒的
+    /// 添加时间挤到了第 24 位。
+    ///
+    /// 兜底链：`creationDate → addedToDirectoryDate → contentModificationDate`。
+    /// 后两者仅在创建时间缺失的卷上兜底，保证排序仍然确定。
+    let createdAt: Date
     
     /// 相对**加载根目录**的路径分量，用于实现"目录优先"排序。
     ///
@@ -32,7 +39,7 @@ class ImageItem: Identifiable, ObservableObject, Equatable {
     ///
     /// 例：`/photos/2023/summer/a.jpg` → `[<2023 的加入时间>, <summer 的加入时间>]`。
     ///
-    /// 用途：让"按添加时间"排序时**目录块本身也按时间排序**，而不是永远按名称排。
+    /// 用途：让"按时间"排序时**目录块本身也按加入时间新→旧**，而不是永远按名称排。
     /// 目录的时间由加载器一次性收集（按路径查表），避免每张图片重复 stat。
     let directoryAddedDates: [Date]
     
@@ -54,7 +61,7 @@ class ImageItem: Identifiable, ObservableObject, Equatable {
         self.thumbnailData = nil
         self.size = CGSize(width: 1.0, height: 1.0) // 默认尺寸，避免除零错误
         self.thumbnailSize = nil // 默认缩略图尺寸为空
-        self.addedAt = Self.addedDate(of: url)
+        self.createdAt = Self.createdDate(of: url)
         
         let relative = Self.relativeDirectory(of: url, from: rootURL)
         self.relativeDirectory = relative
@@ -75,10 +82,29 @@ class ImageItem: Identifiable, ObservableObject, Equatable {
     
     // MARK: - 元数据读取
     
-    /// 读取某个文件 / 目录"加入其所在目录的时间"，并做兜底。
+    /// 读取文件的创建时间（Birth），缺失时回退到"加入目录时间"与修改时间。
     ///
-    /// 同时供图片（`addedAt`）与目录（`directoryAddedDates`）使用——目录自身的
-    /// `addedToDirectoryDate` 语义与文件完全一致（"该目录加入其父目录的时间"）。
+    /// 只用于**文件**排序；目录排序仍走 `addedDate(of:)`。
+    static func createdDate(of url: URL) -> Date {
+        let keys: Set<URLResourceKey> = [
+            .creationDateKey,
+            .addedToDirectoryDateKey,
+            .contentModificationDateKey
+        ]
+        guard let values = try? url.resourceValues(forKeys: keys) else {
+            return .distantPast
+        }
+        return values.creationDate
+            ?? values.addedToDirectoryDate
+            ?? values.contentModificationDate
+            ?? .distantPast
+    }
+    
+    /// 读取某个**目录**"加入其所在目录的时间"，并做兜底。
+    ///
+    /// 只供 `directoryAddedDates`（目录块排序）使用。目录用"加入父目录的时间"
+    /// 而不是创建时间，是因为维护者确认"最近加进来的文件夹排前面"更符合直觉，
+    /// 且改名不会改变该值、只有移动会重置它。
     static func addedDate(of url: URL) -> Date {
         let keys: Set<URLResourceKey> = [
             .addedToDirectoryDateKey,

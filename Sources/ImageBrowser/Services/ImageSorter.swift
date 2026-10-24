@@ -5,8 +5,9 @@ import Foundation
 /// 设计要点：
 ///
 /// 1. **纯函数**：只依赖 `ImageItem` 上已有的字段（`relativeDirectory` / `name` /
-///    `addedAt`），既不访问 `AppState`，也不碰磁盘。因此"切换排序方式"可以在内存里
-///    瞬时完成（20000 张实测约 40 ms），不需要重新扫描目录。
+///    `createdAt` / `directoryAddedDates`），既不访问 `AppState`，也不碰磁盘。
+///    因此"切换排序方式"可以在内存里瞬时完成（20000 张实测约 40 ms），
+///    不需要重新扫描目录。
 ///
 /// 2. **目录优先**：确定性的两种排序都先逐级比较 `relativeDirectory`（短前缀在前），
 ///    再比较目录内的图片。这保证同一子目录的图片必然连续、不会被其他目录的图片穿插，
@@ -111,13 +112,16 @@ enum ImageSorter {
             return a.count < b.count
         }
         
-        // 同一目录内：文件也按加入时间新→旧
-        if lhs.addedAt != rhs.addedAt {
-            return lhs.addedAt > rhs.addedAt
+        // 同一目录内：文件按**创建时间**新→旧。
+        //
+        // 注意这里刻意不用 `addedToDirectoryDate`：批量复制 / 移动会把整批文件的
+        // 该值重置到同一秒，抹掉真实生成顺序（实测 `/output/2025-12-25` 最新 24 个
+        // 文件同属 16:40:48，彼此只能靠名称排，导致最新创建的图被挤到第 24 位）。
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt > rhs.createdAt
         }
         
-        // 时间相同（例如网络卷上 addedToDirectoryDate 缺失，兜底取到的可能是同一时间）
-        // 时用名称兜底，避免每次刷新顺序都在变
+        // 创建时间相同（或缺失）时用名称兜底，避免每次刷新顺序都在变
         let nameResult = lhs.name.localizedStandardCompare(rhs.name)
         if nameResult != .orderedSame {
             return nameResult == .orderedAscending

@@ -38,7 +38,7 @@ class ImageDetailViewModel: ObservableObject {
     // private let sharpenIntensity: Double = 2.5
     // private let sharpenRadius: Double = 0.5
     // 为了去除黑白漫画缩放后的高频网纹做以下参数
-    private let sharpenIntensity: Double = 1.5
+    private let sharpenIntensity: Double = 1.4
     private let sharpenRadius: Double = 1
 
     // 图片缓存系统
@@ -340,7 +340,7 @@ class ImageDetailViewModel: ObservableObject {
         //   - 缩小（scale < 1）：完整锐化，补偿预模糊
         //   - 放大（scale > 1）：按 1/scale 衰减，避免放大 Lanczos ringing,目前用固定值
         let smallToBigIntensity: Double = scale > 1.0
-            ? 3.2
+            ? 3.0
             : sharpenIntensity
 
         let smallToBigRadius: Double = scale > 1.0

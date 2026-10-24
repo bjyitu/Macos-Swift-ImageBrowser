@@ -11,7 +11,8 @@ enum ImageSortType: String, CaseIterable, Identifiable {
     case random
     /// 按名称：目录优先，目录内按名称升序
     case name
-    /// 按添加时间：目录优先，目录内按"加入该目录的时间"由新到旧
+    /// 按时间：目录优先。目录块按"加入父目录的时间"新→旧；
+    /// 目录内的文件按**创建时间**新→旧（批量移动会重置添加时间，不能反映生成顺序）
     case addedTime
     
     var id: String { rawValue }
@@ -21,7 +22,7 @@ enum ImageSortType: String, CaseIterable, Identifiable {
         switch self {
         case .random:    return "随机"
         case .name:      return "按名称"
-        case .addedTime: return "按添加时间"
+        case .addedTime: return "按时间"
         }
     }
     
