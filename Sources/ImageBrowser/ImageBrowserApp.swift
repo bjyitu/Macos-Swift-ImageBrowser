@@ -248,8 +248,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 //
                 // 现在与菜单 / 拖拽路径完全统一：只设好目录，交给 `openBrowserWindow`，
                 // 由 `ImageBrowserView` 在后台加载并显示"加载中"。
+                //
+                // 目录**变了**时只需要一条加载通道：`selectedFolderURL` 的变化会触发
+                // `ImageBrowserView.onChange` → `loadImages`。这里再发 `.reloadImages`
+                // 会让同一个目录被完整扫描两遍（日志里的两条 Loading/Loaded），
+                // 所以只有"重新打开同一个目录"（onChange 不会触发）时才要求 reload。
+                let folderChanged = AppState.shared.selectedFolderURL != url
                 AppState.shared.selectedFolderURL = url
-                self.openBrowserWindow(shouldReloadImages: true)
+                self.openBrowserWindow(shouldReloadImages: !folderChanged)
                 return
             case .unknown:
                 print("Unknown file type: \(url.path)")
@@ -651,8 +657,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) {
                     if isDirectory.boolValue {
                         // 选择的是文件夹
+                        // 目录变了由 `onChange` 负责加载；只有重开同一目录才显式 reload，
+                        // 避免同目录被 `.onChange` 和 `.reloadImages` 各扫一遍。
+                        let folderChanged = AppState.shared.selectedFolderURL != url
                         AppState.shared.selectedFolderURL = url
-                        NotificationManager.shared.openBrowserWindow(shouldReloadImages: true)
+                        NotificationManager.shared.openBrowserWindow(shouldReloadImages: !folderChanged)
                     } else {
                         // 选择的是图片文件
                         NotificationManager.shared.openImageFile(url)

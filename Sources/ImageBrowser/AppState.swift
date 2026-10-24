@@ -31,19 +31,78 @@ class AppState: ObservableObject {
     /// 的 `reusableItems` 参数）。
     @Published private(set) var images: [ImageItem] = []
     
+    /// 列表内容的版本号：每次**整体替换**（`setImages`）时自增。
+    ///
+    /// 作用：给分批装填任务一个"我上屏时列表长什么样"的凭据。分批任务启动时记下
+    /// 当前版本号，每次追加前核对；一旦列表被**外部整体替换**（典型场景：Finder
+    /// 双击图片时 `AppDelegate.loadImagesInBackground` 直接把完整列表写进来），
+    /// 旧任务就立刻停止，不会再把同一批 URL 追加到一份已经包含它们的列表里。
+    ///
+    /// 这正是「同一目录的内容在列表里出现两遍」的根因：完整列表先上屏、随后
+    /// 旧的分批任务又从第 0 批开始 append，于是前 200 张（按时间排序时正好包含
+    /// 最新的整个子目录）被重复了一遍。
+    private(set) var imagesRevision: Int = 0
+    
     // MARK: - 图片列表的主线程写入接口
     
     /// 整体替换图片列表。**必须在主线程调用。**
     func setImages(_ newValue: [ImageItem]) {
         assertMainThread("setImages")
-        images = newValue
+        images = Self.deduplicatedByURL(newValue, context: "setImages")
+        imagesRevision &+= 1
     }
     
     /// 追加一批图片。**必须在主线程调用。**
+    ///
+    /// 按 URL 去重：同一路径在列表里只应出现一次。即使上层还有未覆盖的竞态，
+    /// 这里也能保证 UI 不会拿到重复项（重复的 `id` 会触发 SwiftUI 的
+    /// "ID occurs multiple times" 警告，并让同一张图显示两次）。
     func appendImages(_ newItems: [ImageItem]) {
         assertMainThread("appendImages")
         guard !newItems.isEmpty else { return }
-        images.append(contentsOf: newItems)
+        
+        var seen = Set(images.map { $0.url.path })
+        var accepted: [ImageItem] = []
+        accepted.reserveCapacity(newItems.count)
+        var firstDuplicate: String?
+        for item in newItems {
+            if seen.insert(item.url.path).inserted {
+                accepted.append(item)
+            } else if firstDuplicate == nil {
+                firstDuplicate = item.url.path
+            }
+        }
+        
+        if let firstDuplicate = firstDuplicate {
+            let dropped = newItems.count - accepted.count
+            print("⚠️ appendImages: 丢弃 \(dropped) 张重复图片（路径已在列表中）：\(firstDuplicate)")
+        }
+        
+        guard !accepted.isEmpty else { return }
+        images.append(contentsOf: accepted)
+    }
+    
+    /// 按 `url.path` 去重，保留首次出现的项。用于所有整体替换入口。
+    private static func deduplicatedByURL(_ items: [ImageItem], context: String) -> [ImageItem] {
+        guard items.count > 1 else { return items }
+        
+        var seen = Set<String>()
+        var result: [ImageItem] = []
+        result.reserveCapacity(items.count)
+        var firstDuplicate: String?
+        
+        for item in items {
+            if seen.insert(item.url.path).inserted {
+                result.append(item)
+            } else if firstDuplicate == nil {
+                firstDuplicate = item.url.path
+            }
+        }
+        
+        if result.count != items.count, let firstDuplicate = firstDuplicate {
+            print("⚠️ \(context): 列表含 \(items.count - result.count) 个重复路径，已去重：\(firstDuplicate)")
+        }
+        return result
     }
     
     /// 按条件移除图片。**必须在主线程调用。**

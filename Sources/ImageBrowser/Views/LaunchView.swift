@@ -68,8 +68,10 @@ struct LaunchView: View {
                         // 如果不是图片文件，检查是否为文件夹
                         var isDirectory: ObjCBool = false
                         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue {
+                            // 目录变了由 `onChange` 加载；只有重开同一目录才显式 reload。
+                            let folderChanged = AppState.shared.selectedFolderURL != url
                             AppState.shared.selectedFolderURL = url
-                            NotificationManager.shared.openBrowserWindow(shouldReloadImages: true)
+                            NotificationManager.shared.openBrowserWindow(shouldReloadImages: !folderChanged)
                         }
                     }
                 }

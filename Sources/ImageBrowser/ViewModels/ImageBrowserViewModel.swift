@@ -30,6 +30,21 @@ class ImageBrowserViewModel: ObservableObject {
     private var isBatchLoading = false
     private var batchLoadingTask: Task<Void, Never>?
     
+    /// 整轮扫描的代号。每次 `loadImages` / `refresh` 开始时自增。
+    ///
+    /// **为什么需要它**：后台扫描是并发的，而且大目录（父目录）比小目录（子目录）
+    /// 慢得多。先加载 `/img`、加载途中再打开 `/img/Cartoon` 时，常见顺序是
+    /// "子目录先完成、父目录后完成"。旧代码的父目录完成回调不核对代号，会把
+    /// `allImageItems` 覆盖回父目录列表，而正在跑的**子目录**分批任务会继续从
+    /// 父目录列表的当前下标往后 append：
+    ///
+    /// - 列表前半段是子目录内容（已含整个 `20261017_160412` 块）；
+    /// - 后半段又从父目录列表里取到同一批文件 → 同一 URL 出现两遍。
+    ///
+    /// 有了代号后，过期的完成回调直接丢弃，既不会覆盖 `allImageItems`，
+    /// 也不会把旧目录的内容混进新目录。
+    private var loadGeneration = 0
+    
     init() {
         // 1010需求：排序方式变更时，只对内存中的列表重排，不重新扫描目录。
         // `dropFirst()` 用于跳过订阅瞬间立即发出的当前值（那是初始状态，不需要重排）。
@@ -43,8 +58,29 @@ class ImageBrowserViewModel: ObservableObject {
     }
     
     func loadImages(from folderURL: URL) {
+        // 同一目录的重复触发直接忽略。
+        //
+        // 打开目录时目前有两条通道都会调用本方法：
+        //   1. `ImageBrowserView.onChange(of: appState.selectedFolderURL)`
+        //   2. `AppDelegate.openBrowserWindow(shouldReloadImages:)` 发出的 `.reloadImages`
+        // 两条通道在同一轮 RunLoop 里先后到达，于是同一个目录被完整扫描两遍
+        // （日志表现为连续两条 "Loading images..." / "Loaded N images..."）。
+        // 扫描本身不产生错误结果（`loadGeneration` 会丢弃后完成的那次），但大目录
+        // 白扫一遍（5925 张约多花一倍 IO/解码），因此在这里按"目录 + 正在加载"去重。
+        //
+        // 注意：加载**完成后**再次打开同一目录不受影响（`isLoading` 已为 false，
+        // 仍会正常重新扫描），所以 `r` 之外的"重开目录"语义保持不变。
+        if isLoading && selectedFolderURL == folderURL {
+            print("Skip duplicate load (already loading): \(folderURL.path)")
+            return
+        }
+        
         isLoading = true
         errorMessage = nil
+        
+        // 本轮的代号：启动后台扫描前取，完成时核对。比本方法更晚开始的加载会把它顶掉。
+        loadGeneration += 1
+        let generation = loadGeneration
 
         // 「重复打开同一目录」时复用已有的 `ImageItem`（第 4 步优化）。
         //
@@ -111,6 +147,11 @@ class ImageBrowserViewModel: ObservableObject {
             )
             
             DispatchQueue.main.async {
+                // 过期结果直接丢弃：期间用户可能已经打开了别的目录。
+                // 这样既不会把旧目录的 `allImageItems` 覆盖回来，也不会让新目录的
+                // 分批任务接着旧列表的下标继续 append（那会把旧内容混进来）。
+                guard generation == self.loadGeneration else { return }
+                
                 // 1010需求：以**当前**排序方式为准——加载期间用户可能已经切换过排序。
                 // 若与加载时用的是同一种，就无需再排一次（20000 张重排约 40 ms）。
                 let currentSortType = AppState.shared.sortType
@@ -158,6 +199,8 @@ class ImageBrowserViewModel: ObservableObject {
         let requestedSortType = AppState.shared.sortType
         
         isLoading = true
+        loadGeneration += 1
+        let generation = loadGeneration
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -170,6 +213,8 @@ class ImageBrowserViewModel: ObservableObject {
             )
             
             DispatchQueue.main.async {
+                // 过期结果丢弃：期间可能已经切换到别的目录（refresh 不再代表当前目录）
+                guard generation == self.loadGeneration else { return }
                 self.isLoading = false
                 // 与 loadImages 的收尾同口径：以**当前**排序方式为准
                 let currentSortType = AppState.shared.sortType
@@ -216,6 +261,10 @@ class ImageBrowserViewModel: ObservableObject {
         batchGeneration += 1
         let generation = batchGeneration
         
+        // 记录本轮开始时列表的版本号（见 `AppState.imagesRevision`）。
+        // 若中途列表被**整体替换**（Finder 打开图片等外部路径），旧任务必须停手。
+        batchImagesRevision = AppState.shared.imagesRevision
+        
         // 标题栏：总量已确定（= 完整列表长度），开始逐批推进。
         // 这里写的是 `allImageItems.count` 而不是 `AppState.images.count`——
         // 后者此时只装了前几批，正是要避免把它当成"总量"显示出来。
@@ -240,6 +289,14 @@ class ImageBrowserViewModel: ObservableObject {
     /// 过期就立刻退出、不再写入。
     private var batchGeneration = 0
     
+    /// 本轮分批任务启动时 `AppState.imagesRevision` 的值。
+    ///
+    /// 与 `batchGeneration` 互补：
+    /// - `batchGeneration` 挡的是"本 ViewModel 自己又开了一轮"；
+    /// - `imagesRevision` 挡的是"列表被别处整体替换"（`setImages` 不经过本 ViewModel）。
+    /// 少了后者时，完整列表先上屏、旧任务再从第 0 批 append，就会出现重复内容。
+    private var batchImagesRevision = 0
+    
     private func loadImagesInBatches(generation: Int, preloadedBatch: [ImageItem]) async {
         // 先补做"已直接上屏那一批"的缩略图。
         // 下面的循环从 currentBatchIndex（= 这一批之后）开始，覆盖不到它；
@@ -254,7 +311,8 @@ class ImageBrowserViewModel: ObservableObject {
             // 所有可变状态（currentBatchIndex / allImageItems / batchGeneration）
             // 都收在主线程读写，避免与 resort / loadImages 竞争。
             let batchItems: [ImageItem]? = await MainActor.run {
-                guard generation == self.batchGeneration else { return nil }
+                guard generation == self.batchGeneration,
+                      AppState.shared.imagesRevision == self.batchImagesRevision else { return nil }
                 guard self.currentBatchIndex < self.allImageItems.count else { return nil }
                 
                 let startIndex = self.currentBatchIndex
@@ -272,7 +330,8 @@ class ImageBrowserViewModel: ObservableObject {
             // 避免与后台加载 / 删除回调竞争同一个数组。
             // 代号核对是第二道防线：即便状态读取之后才被顶替，也不会重复写入。
             await MainActor.run {
-                guard generation == self.batchGeneration else { return }
+                guard generation == self.batchGeneration,
+                      AppState.shared.imagesRevision == self.batchImagesRevision else { return }
                 AppState.shared.appendImages(batchItems)
             }
             
