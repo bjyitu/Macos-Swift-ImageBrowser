@@ -41,6 +41,13 @@ struct ImageBrowserView: View {
                 .padding(.bottom, 20)
         }
         // .edgesIgnoringSafeArea(.top) // 可以将列表向上提一点,但是移动窗口时会激活图片ondrag
+        // 标题栏渐变底板：滚动时缩略图会从标题栏下方经过，系统标题同样需要垫一层，
+        // 否则深色外观下白字压在浅色缩略图上一样看不清。
+        // 注意挂在最外层 VStack 上（和排序按钮同一层），不能进 `ImageGridView`——
+        // 那边有 `.drawingGroup()` 离屏渲染，挂进去会被吞掉。
+        .overlay(alignment: .top) {
+            TitleScrim()
+        }
         .background(UnifiedKeyboardResponder(
             keyboardContext: KeyboardActionService.createBrowserKeyboardContext(
                 appState: appState,

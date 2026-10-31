@@ -394,6 +394,13 @@ struct ImageDetailView: View {
                 }
             }
         )
+        // 标题栏渐变底板：图片铺满整窗（含标题栏下方），系统标题在深色外观下是白字，
+        // 直接压在浅色图片上会糊掉。这层渐变垫在「图片之上、系统标题之下」，两种外观都可读。
+        // 位置要求：必须挂在 `.scaleEffect(scale)` 之外，否则切图那下 1.01→1 的动效
+        // 会把渐变一起缩放，看得出来。
+        .overlay(alignment: .top) {
+            TitleScrim()
+        }
         .onDisappear {
             // 视图消失时停止自动播放
             stopAutoPlay()
