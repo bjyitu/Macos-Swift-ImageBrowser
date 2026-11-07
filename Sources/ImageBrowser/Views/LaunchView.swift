@@ -17,7 +17,7 @@ struct LaunchView: View {
                     .font(.system(size: 14))
                     .foregroundColor(.secondary)
                     .opacity(0.7)
-                Text("或拖拽图片文件到此窗口")
+                Text("或拖拽图片 / 文件夹到此窗口（可多选）")
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
                     .opacity(0.7)
@@ -51,32 +51,54 @@ struct LaunchView: View {
         }
     }
     
-    // 处理拖拽文件
+    // 处理拖拽文件（支持一次拖入多个）
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else { return false }
+        guard !providers.isEmpty else { return false }
         
-        // 加载文件URL
-        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { (item, error) in
-            if let data = item as? Data,
-               let url = URL(dataRepresentation: data, relativeTo: nil) {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var urls: [URL] = []
+        
+        for provider in providers {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                defer { group.leave() }
                 
-                DispatchQueue.main.async {
-                    // 检查是否为图片文件
-                    if ImageLoaderService.shared.isImageFile(url) {
-                        NotificationManager.shared.openImageFile(url)
-                    } else {
-                        // 如果不是图片文件，检查是否为文件夹
-                        var isDirectory: ObjCBool = false
-                        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue {
-                            // 目录变了由 `onChange` 加载；只有重开同一目录才显式 reload。
-                            let folderChanged = AppState.shared.selectedFolderURL != url
-                            AppState.shared.selectedFolderURL = url
-                            NotificationManager.shared.openBrowserWindow(shouldReloadImages: !folderChanged)
-                        }
-                    }
+                let url: URL?
+                if let data = item as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                } else if let nsURL = item as? NSURL {
+                    url = nsURL as URL
+                } else if let fileURL = item as? URL {
+                    url = fileURL
+                } else {
+                    url = nil
                 }
+                
+                guard let url = url else { return }
+                lock.lock()
+                urls.append(url)
+                lock.unlock()
             }
         }
+        
+        // 等所有 provider 都解析完，再统一走与面板/Finder 相同的分派
+        group.notify(queue: .main) {
+            let picked = urls.filter { url in
+                ImageLoaderService.shared.isImageFile(url) || ImageLoaderService.shared.isDirectory(url)
+            }
+            guard !picked.isEmpty else { return }
+            
+            if picked.count == 1, ImageLoaderService.shared.isImageFile(picked[0]) {
+                NotificationManager.shared.openImageFile(picked[0])
+                return
+            }
+            
+            let selectionChanged = Set(AppState.shared.openURLs) != Set(picked)
+            AppState.shared.openURLs = picked
+            NotificationManager.shared.openBrowserWindow(shouldReloadImages: !selectionChanged)
+        }
+        
         return true
     }
     

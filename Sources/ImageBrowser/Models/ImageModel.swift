@@ -55,7 +55,17 @@ class ImageItem: Identifiable, ObservableObject, Equatable {
     ///     传 nil 时视为"无目录结构"（如 SwiftUI Preview）。
     ///   - directoryAddedDates: 目录绝对路径 → 该目录自身的加入时间。
     ///     由 `ImageLoaderService` 在加载时统一收集后传入。
-    init(url: URL, rootURL: URL? = nil, directoryAddedDates: [String: Date] = [:]) {
+    ///   - relativePrefix: 虚拟根下的一级前缀（通常是所选目录的显示名）。
+    ///     多个来源合并成一份列表时，靠它保证不同来源的目录不会在排序时混在一起。
+    ///   - prefixDates: 与 `relativePrefix` 一一对应的目录时间。虚拟层没有真实目录，
+    ///     由调用方补一个（当前统一传 `.distantPast`）。
+    init(
+        url: URL,
+        rootURL: URL? = nil,
+        directoryAddedDates: [String: Date] = [:],
+        relativePrefix: [String] = [],
+        prefixDates: [Date] = []
+    ) {
         self.url = url
         self.name = url.lastPathComponent
         self.thumbnailData = nil
@@ -64,8 +74,13 @@ class ImageItem: Identifiable, ObservableObject, Equatable {
         self.createdAt = Self.createdDate(of: url)
         
         let relative = Self.relativeDirectory(of: url, from: rootURL)
-        self.relativeDirectory = relative
-        self.directoryAddedDates = Self.resolveDirectoryDates(
+        self.relativeDirectory = relativePrefix + relative
+        // 注意：真实目录时间必须用**未加前缀**的 relative 去查表，
+        // 否则会按虚拟前缀拼出不存在的目录路径。
+        let datesForPrefix = prefixDates.count == relativePrefix.count
+            ? prefixDates
+            : Array(repeating: Date.distantPast, count: relativePrefix.count)
+        self.directoryAddedDates = datesForPrefix + Self.resolveDirectoryDates(
             relativeDirectory: relative,
             rootURL: rootURL,
             lookup: directoryAddedDates

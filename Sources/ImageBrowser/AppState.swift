@@ -5,7 +5,15 @@ import Combine
 class AppState: ObservableObject {
     static let shared = AppState()
     
-    @Published var selectedFolderURL: URL?
+    /// 当前这一次打开的来源集合：目录按“递归整棵子树”解释，单独的文件按“仅自身”解释。
+    ///
+    /// - 只有一个来源、且该来源是一张图片时，`AppDelegate.openImageFile` 仍按旧语义
+    ///   把它的**父目录**写进来（扫整个目录并定位到这张图）。
+    /// - 其余情况（多目录、多文件、混合）按字面量处理：目录递归展开，文件只取自身。
+    ///
+    /// 该属性是“当前打开的是什么”的唯一数据源：视图用它触发加载，`r` 刷新用它，
+    /// 重开同一组来源也用它做比较。
+    @Published var openURLs: [URL] = []
     // 注：原先这里还有一个 `selectedImageItem`，但它**只写不读**（2 处写入、0 处读取），
     // 是彻底失效的死属性，已删除。
     // 详情页"当前显示哪张图"的权威来源是 `ImageDetailViewModel.imageItem`；

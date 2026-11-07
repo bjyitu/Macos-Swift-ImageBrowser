@@ -220,70 +220,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     // 统一的文件打开处理方法
+    //
+    // Finder 多选“打开方式”、`application(_:open:)`、Apple Event 最终都汇到这里。
+    // 与面板/拖拽保持同一套分派：单张图片走“扫父目录 + 定位”，其余走字面量集合。
     private func handleFileOpen(_ urls: [URL]) {
-        for url in urls {
-            
-            // 检查文件类型
-            let fileType = getFileType(url)
-            
-            switch fileType {
-            case .file:
-                if ImageLoaderService.shared.isImageFile(url) {
-                    print("filetype: image, Opening image file: \(url.path)")
-                    // P1-13：不再走 `openImageFileWithRetry`——那个"重试"包装存在的唯一理由
-                    // 是"同步扫描完可能仍找不到图片项"，现在扫描已异步化且会等目标出现，
-                    // 重试机制随之作废（已删除）。这里直接复用 `openImageFile`。
-                    self.openImageFile(url)
-                    return
-                }
-            case .directory:
-                print("filetype: folder, Opening folder: \(url.path)")
-                // P1-9 修复：不再在主线程同步预加载整个目录。
-                //
-                // 原实现是 `loadImagesFromFolder(url)`（阻塞至全部文件头读完）
-                // 再 `openBrowserWindow(shouldReloadImages: false)`，意图是"窗口一出现就带着数据"。
-                // 但第一次开窗时 `shouldReloadImages` 参数在 `openBrowserWindow` 里并不生效
-                //（它只在窗口已存在的分支被读取），`ImageBrowserView.onAppear` 仍会重新加载
-                // 并先 `setImages([])` 清空列表——那次同步扫描的结果被直接丢弃，纯属白等。
-                //
-                // 现在与菜单 / 拖拽路径完全统一：只设好目录，交给 `openBrowserWindow`，
-                // 由 `ImageBrowserView` 在后台加载并显示"加载中"。
-                //
-                // 目录**变了**时只需要一条加载通道：`selectedFolderURL` 的变化会触发
-                // `ImageBrowserView.onChange` → `loadImages`。这里再发 `.reloadImages`
-                // 会让同一个目录被完整扫描两遍（日志里的两条 Loading/Loaded），
-                // 所以只有"重新打开同一个目录"（onChange 不会触发）时才要求 reload。
-                let folderChanged = AppState.shared.selectedFolderURL != url
-                AppState.shared.selectedFolderURL = url
-                self.openBrowserWindow(shouldReloadImages: !folderChanged)
-                return
-            case .unknown:
-                print("Unknown file type: \(url.path)")
-            }
-        }
-    }
-    
-    // 文件类型判断
-    private func getFileType(_ url: URL) -> FileType {
-        let fileManager = FileManager.default
-        var isDirectory: ObjCBool = false
-        
-        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-            return .unknown
-        }
-        
-        return isDirectory.boolValue ? .directory : .file
-    }
-    
-    // 延迟计算
-    // P1-13：`calculateDelay(for:)` 原为 `openImageFileWithRetry` 的退避重试服务，
-    // 随该重试包装一并删除（10/20/30ms 的延迟本就过短，无法规避任何真实问题）。
-    
-    // 文件类型枚举
-    private enum FileType {
-        case file
-        case directory
-        case unknown
+        openSelection(urls)
     }
     
     // 处理单个文件打开（兼容旧API）
@@ -300,30 +241,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // 获取文件列表
             if let files = event.paramDescriptor(forKeyword: keyDirectObject) {
                 if files.descriptorType == typeAEList {
-                    // 处理多个文件
-                    let count = files.numberOfItems
-                    print("Number of files: \(count)")
-                    
-                    for i in 1...count {
-                        if let fileDescriptor = files.atIndex(i),
-                           let filePath = fileDescriptor.stringValue {
-                            let url = URL(fileURLWithPath: filePath)
-                            print("Processing file: \(filePath)")
-                            
-                            if ImageLoaderService.shared.isImageFile(url) {
-                                openImageFile(url)
-                                break // 只处理第一个图片文件
-                            }
+                    // 多选：收齐后走与 application(_:open:) 相同的分派
+                    var urls: [URL] = []
+                    for i in 1...files.numberOfItems {
+                        if let filePath = files.atIndex(i)?.stringValue {
+                            urls.append(URL(fileURLWithPath: filePath))
                         }
                     }
+                    openSelection(urls)
                 } else if let filePath = files.stringValue {
-                    // 处理单个文件
-                    print("Single file: \(filePath)")
-                    let url = URL(fileURLWithPath: filePath)
-                    
-                    if ImageLoaderService.shared.isImageFile(url) {
-                        openImageFile(url)
-                    }
+                    // 处理单个文件/目录
+                    openSelection([URL(fileURLWithPath: filePath)])
                 }
             }
         }
@@ -371,9 +299,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             updateBrowserWindowTitle()
             
             // 只有在需要重新加载图片时才发送通知
-            if shouldReloadImages, let folderURL = AppState.shared.selectedFolderURL {
-                // 发送通知让ImageBrowserView重新加载图片
-                NotificationManager.shared.post(name: .reloadImages, userInfo: ["folderURL": folderURL])
+            if shouldReloadImages, !AppState.shared.openURLs.isEmpty {
+                // 由 ImageBrowserView 重新加载当前这一组来源
+                NotificationManager.shared.post(name: .reloadImages)
             }
         }
     }
@@ -582,14 +510,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// - Parameter completion: 在主线程回调，参数为本次加载出的图片列表。
     private func loadImagesInBackground(_ folderURL: URL, completion: @escaping ([ImageItem]) -> Void) {
         // P0-1 线程契约：可复用的旧 ImageItem 快照必须在主线程取好再带进后台。
-        let reusableItems = AppState.shared.selectedFolderURL == folderURL ? AppState.shared.images : []
+        let reusableItems = AppState.shared.openURLs == [folderURL] ? AppState.shared.images : []
         // 1010需求：排序方式同样在主线程读取后带进后台
         let sortType = AppState.shared.sortType
         
         DispatchQueue.global(qos: .userInitiated).async {
-            // 使用共享服务加载图片，保持原有的复用和排序行为
-            let imageItems = ImageLoaderService.shared.loadImagesFromFolder(
-                folderURL,
+            // 走与多选相同的入口：单目录也会带上虚拟根前缀，后续 ViewModel
+            // 复用这些 item 时前缀一致，不会出现“重载后详情页找不到当前图片”。
+            let imageItems = ImageLoaderService.shared.loadImages(
+                from: [folderURL],
                 shouldReuseItems: true,
                 sortType: sortType,
                 reusableItems: reusableItems
@@ -598,7 +527,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             DispatchQueue.main.async {
                 // P0-1 修复：统一走 AppState 的主线程写入接口，不再直接赋值 images。
                 AppState.shared.setImages(imageItems)
-                AppState.shared.selectedFolderURL = folderURL
+                AppState.shared.openURLs = [folderURL]
                 completion(imageItems)
             }
         }
@@ -626,13 +555,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - 文件菜单功能
     
     func openImageFolder() {
-        // 创建文件选择面板，允许选择文件夹和图片文件
+        // 创建文件选择面板，允许选择文件夹和图片文件（支持多选）
         let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.canCreateDirectories = false
-        panel.title = "选择图片文件夹或图片文件"
+        panel.title = "选择图片文件夹或图片文件（可多选）"
         panel.prompt = "选择"
         
         // 设置允许的文件类型
@@ -647,27 +576,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         // 显示面板并处理结果
         if panel.runModal() == .OK {
-            if let url = panel.url {
-                #if DEBUG
-                print("Selected: \(url.path)")
-                #endif
-                
-                // 检查选择的是文件夹还是图片文件
-                var isDirectory: ObjCBool = false
-                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) {
-                    if isDirectory.boolValue {
-                        // 选择的是文件夹
-                        // 目录变了由 `onChange` 负责加载；只有重开同一目录才显式 reload，
-                        // 避免同目录被 `.onChange` 和 `.reloadImages` 各扫一遍。
-                        let folderChanged = AppState.shared.selectedFolderURL != url
-                        AppState.shared.selectedFolderURL = url
-                        NotificationManager.shared.openBrowserWindow(shouldReloadImages: !folderChanged)
-                    } else {
-                        // 选择的是图片文件
-                        NotificationManager.shared.openImageFile(url)
-                    }
-                }
-            }
+            openSelection(panel.urls)
         }
+    }
+    
+    /// 统一处理一次“打开选择”：
+    ///
+    /// - 过滤后只剩 1 张图片 → 走旧语义：扫它所在目录、定位到它、开详情；
+    /// - 其余（单/多目录、多图片、混合）→ 字面量集合：目录递归、文件只取自身。
+    ///
+    /// 这是面板、拖拽、Finder 打开三条入口共用的分派点。
+    func openSelection(_ urls: [URL]) {
+        let picked = urls.filter { url in
+            ImageLoaderService.shared.isImageFile(url) || ImageLoaderService.shared.isDirectory(url)
+        }
+        guard !picked.isEmpty else { return }
+        
+        if picked.count == 1, ImageLoaderService.shared.isImageFile(picked[0]) {
+            NotificationManager.shared.openImageFile(picked[0])
+            return
+        }
+        
+        // 集合没变时 `onChange` 不会触发，需要显式 reload；变了则交给 `onChange` 单通道加载。
+        let selectionChanged = Set(AppState.shared.openURLs) != Set(picked)
+        AppState.shared.openURLs = picked
+        NotificationManager.shared.openBrowserWindow(shouldReloadImages: !selectionChanged)
     }
 }

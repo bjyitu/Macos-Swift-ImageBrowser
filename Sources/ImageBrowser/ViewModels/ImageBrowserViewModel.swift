@@ -10,7 +10,9 @@ class ImageBrowserViewModel: ObservableObject {
     // 主线程渲染使用；所有写入一律走 AppState 的主线程写入接口（见下）。
     var images: [ImageItem] { AppState.shared.images }
     
-    @Published var selectedFolderURL: URL?
+    /// 本轮加载使用的来源集合。用于判断“重开同一组来源”时能否复用已有 `ImageItem`。
+    /// 只在主线程读写。
+    private var loadedURLs: [URL] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     
@@ -57,21 +59,17 @@ class ImageBrowserViewModel: ObservableObject {
             .store(in: &cancellables)
     }
     
-    func loadImages(from folderURL: URL) {
-        // 同一目录的重复触发直接忽略。
-        //
-        // 打开目录时目前有两条通道都会调用本方法：
-        //   1. `ImageBrowserView.onChange(of: appState.selectedFolderURL)`
-        //   2. `AppDelegate.openBrowserWindow(shouldReloadImages:)` 发出的 `.reloadImages`
-        // 两条通道在同一轮 RunLoop 里先后到达，于是同一个目录被完整扫描两遍
-        // （日志表现为连续两条 "Loading images..." / "Loaded N images..."）。
-        // 扫描本身不产生错误结果（`loadGeneration` 会丢弃后完成的那次），但大目录
-        // 白扫一遍（5925 张约多花一倍 IO/解码），因此在这里按"目录 + 正在加载"去重。
-        //
-        // 注意：加载**完成后**再次打开同一目录不受影响（`isLoading` 已为 false，
-        // 仍会正常重新扫描），所以 `r` 之外的"重开目录"语义保持不变。
-        if isLoading && selectedFolderURL == folderURL {
-            print("Skip duplicate load (already loading): \(folderURL.path)")
+    /// 载入一组来源（目录或单独的图片文件）。
+    ///
+    /// - 同一集合的重复触发直接忽略（打开目录时 `.onChange` 与 `.reloadImages`
+    ///   两条通道可能同时到达）。
+    /// - 集合未变时复用已有 `ImageItem`：跳过重新读文件头，并保住已生成的缩略图。
+    /// - 集合变了则**不复用**：旧 item 上的虚拟根前缀可能已经不对。
+    func loadImages(from urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        
+        if isLoading && loadedURLs == urls {
+            print("Skip duplicate load (already loading): \(urls.map { $0.lastPathComponent })")
             return
         }
         
@@ -82,24 +80,17 @@ class ImageBrowserViewModel: ObservableObject {
         loadGeneration += 1
         let generation = loadGeneration
 
-        // 「重复打开同一目录」时复用已有的 `ImageItem`（第 4 步优化）。
+        // 判断必须在覆盖 `loadedURLs` 之前完成。
         //
-        // 为什么要在**这里**判断：`selectedFolderURL` 马上就会被覆盖，所以"是否同一目录"
-        // 必须在覆盖之前取。
-        //
-        // 为什么快照要在**主线程**取：P0-1 的线程契约要求 `AppState.images` 只在主线程读写。
-        // 本方法由 SwiftUI 的 onAppear / onChange / 通知回调在主线程调用，因此这里取快照是安全的；
-        // 快照随后作为一个**不可变数组**被带进后台，后台全程不触碰 `AppState`。
-        //
-        // 收益（在 19254 张 / 185 子目录的真实目录上实测）：
-        //   · 跳过全部已有文件的重新读头：646.8 ms → ≈0
-        //   · 整条重开路径约 789 ms → 约 142 ms
-        //   · 顺带保住已生成的缩略图——`ImageItem` 对象被复用，`thumbnailData` 还在，
-        //     网格不必重新解码上万张缩略图
-        let isSameFolder = (selectedFolderURL == folderURL)
-        let reusableItems = isSameFolder ? AppState.shared.images : []
+        // 第二个条件覆盖单图路径：`AppDelegate.openImageFile` 会直接把父目录的完整列表
+        // 写进 `AppState.images`，并把 `openURLs` 设成 `[父目录]`。此时 ViewModel 的
+        // `loadedURLs` 还是空的/旧的，但列表内容已经对应当前来源，复用这些 item
+        // 可以保住它们的 UUID，避免详情页的前后导航在重载后找不到当前图片。
+        let isSameSelection = Set(loadedURLs) == Set(urls)
+            || (Set(AppState.shared.openURLs) == Set(urls) && !AppState.shared.images.isEmpty)
+        let reusableItems = isSameSelection ? AppState.shared.images : []
 
-        selectedFolderURL = folderURL
+        loadedURLs = urls
         
         // 取消正在进行的分批任务（缩略图任务不跟踪、也不取消，理由见属性声明处）
         batchLoadingTask?.cancel()
@@ -113,47 +104,26 @@ class ImageBrowserViewModel: ObservableObject {
         AppState.shared.resetLoadProgress()
         
         // 先清空当前图片列表，确保UI立即更新
-        // P0-1 修复：本方法由 SwiftUI 的 onAppear / onChange / 通知回调在主线程调用，
-        // 改为通过 AppState 的主线程写入接口操作，不再直接给 images 赋值。
         AppState.shared.setImages([])
         
-        // 1010需求：排序方式在主线程读取后带进后台（P0-1 约定 AppState 只在主线程访问）
+        // 排序方式在主线程读取后带进后台（P0-1 约定 AppState 只在主线程访问）
         let requestedSortType = AppState.shared.sortType
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
-            // 使用共享服务加载图片
-            //
-            // P0-1 修复的原始说明（已随第 4 步更新）：本闭包运行在后台队列，因此当时
-            // **不复用**旧 ImageItem（`shouldReuseItems: false`），以确保整个加载过程
-            // 完全不触碰 `AppState.images` / `selectedFolderURL`。
-            //
-            // 第 4 步优化：线程安全不再靠"不复用"来保证，而是靠"**可复用列表已由主线程
-            // 取成不可变快照传进来**"——`reusableItems` 是一个不带任何共享可变状态的数组，
-            // 后台只读它、不回写，因此依然不触碰 `AppState`。
-            //
-            // 改这一点的原因是实测发现"不复用"的代价极高：它会让每个已有文件都重新走一遍
-            // `ImageItem.init`（读文件头）。在 19254 张的真实目录上是 646.8 ms，
-            // 而整条路径里唯一必要的大头成本就来自这里。
-            //
-            // 注意：`reusableItems` 为空数组时（不同目录）行为与 `false` 完全等价——
-            // 服务内部按 URL 查表的字典为空，所有项都会新建。
-            let imageItems = ImageLoaderService.shared.loadImagesFromFolder(
-                folderURL,
+            let imageItems = ImageLoaderService.shared.loadImages(
+                from: urls,
                 shouldReuseItems: true,
                 sortType: requestedSortType,
                 reusableItems: reusableItems
             )
             
             DispatchQueue.main.async {
-                // 过期结果直接丢弃：期间用户可能已经打开了别的目录。
-                // 这样既不会把旧目录的 `allImageItems` 覆盖回来，也不会让新目录的
-                // 分批任务接着旧列表的下标继续 append（那会把旧内容混进来）。
+                // 过期结果直接丢弃：期间用户可能已经打开了别的来源。
                 guard generation == self.loadGeneration else { return }
                 
-                // 1010需求：以**当前**排序方式为准——加载期间用户可能已经切换过排序。
-                // 若与加载时用的是同一种，就无需再排一次（20000 张重排约 40 ms）。
+                // 以**当前**排序方式为准——加载期间用户可能已经切换过排序。
                 let currentSortType = AppState.shared.sortType
                 self.allImageItems = currentSortType == requestedSortType
                     ? imageItems
@@ -164,6 +134,16 @@ class ImageBrowserViewModel: ObservableObject {
                 self.startBatchLoading()
             }
         }
+    }
+    
+    /// 重新载入当前来源集合（`.reloadImages` 用）。
+    ///
+    /// 单图打开时列表由 `AppDelegate` 直接写入，`loadedURLs` 可能为空，
+    /// 此时回退到 `AppState.openURLs`（那里存的是图片所在目录）。
+    func reloadCurrent() {
+        let urls = loadedURLs.isEmpty ? AppState.shared.openURLs : loadedURLs
+        guard !urls.isEmpty else { return }
+        loadImages(from: urls)
     }
     
     /// 仅改变排序方式：对已加载的完整列表在内存里重排，**不重新扫描磁盘**（1010需求）。
@@ -177,17 +157,18 @@ class ImageBrowserViewModel: ObservableObject {
         presentItems(ImageSorter.sort(allImageItems, by: sortType))
     }
     
-    /// 重新载入当前目录，用于拾取目录内**新增 / 删除**的图片（`r` 快捷键）。
+    /// 重新载入当前来源集合，用于拾取目录内**新增 / 删除**的图片（`r` 快捷键）。
     ///
     /// 与 `loadImages` 的关键区别：**全程不清空当前列表**。
     /// - 扫描期间旧列表继续显示，不会闪一帧空态；
     /// - 滚动位置与选中态保持不变（扫完后若某张图仍在，其 `ImageItem` 因复用而保持同一个 `id`）；
     /// - 复用已有 `ImageItem`，未变动的文件不重读文件头、已生成的缩略图也保留。
     ///
-    /// 之所以不复用 `loadImages`：它开头就会 `setImages([])`，那是为"切换目录"准备的
+    /// 之所以不复用 `loadImages`：它开头就会 `setImages([])`，那是为"切换来源"准备的
     /// 语义；原地刷新时那样做会白白闪一下，并丢掉当前浏览位置。
     func refresh() {
-        guard let folderURL = selectedFolderURL else { return }
+        let urls = loadedURLs.isEmpty ? AppState.shared.openURLs : loadedURLs
+        guard !urls.isEmpty else { return }
         // 只挡"另一次扫描"，不挡"分批装填"。
         // 大目录的装填（含全部缩略图）可能持续很久，若把它也算作忙碌，
         // `r` 会在这段时间里完全失效；而重入装填本身是安全的——
@@ -195,9 +176,12 @@ class ImageBrowserViewModel: ObservableObject {
         guard !isLoading else { return }
         
         // P0-1 线程契约：快照与排序方式都在主线程取好后带进后台
-        let reusableItems = AppState.shared.images
+        let isSameSelection = Set(loadedURLs) == Set(urls)
+            || (Set(AppState.shared.openURLs) == Set(urls) && !AppState.shared.images.isEmpty)
+        let reusableItems = isSameSelection ? AppState.shared.images : []
         let requestedSortType = AppState.shared.sortType
         
+        loadedURLs = urls
         isLoading = true
         loadGeneration += 1
         let generation = loadGeneration
@@ -205,15 +189,15 @@ class ImageBrowserViewModel: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
-            let imageItems = ImageLoaderService.shared.loadImagesFromFolder(
-                folderURL,
+            let imageItems = ImageLoaderService.shared.loadImages(
+                from: urls,
                 shouldReuseItems: true,
                 sortType: requestedSortType,
                 reusableItems: reusableItems
             )
             
             DispatchQueue.main.async {
-                // 过期结果丢弃：期间可能已经切换到别的目录（refresh 不再代表当前目录）
+                // 过期结果丢弃：期间可能已经切换到别的来源
                 guard generation == self.loadGeneration else { return }
                 self.isLoading = false
                 // 与 loadImages 的收尾同口径：以**当前**排序方式为准

@@ -56,15 +56,15 @@ struct ImageBrowserView: View {
             )
         ))
         .onAppear {
-            // 如果已经有选中的文件夹，则加载图片
-            if let folderURL = appState.selectedFolderURL {
-                viewModel.loadImages(from: folderURL)
+            // 如果已经有打开来源，则加载
+            if !appState.openURLs.isEmpty {
+                viewModel.loadImages(from: appState.openURLs)
             }
         }
-        .onChange(of: appState.selectedFolderURL) { newFolderURL in
-            // 当选择的文件夹发生变化时，重新加载图片
-            if let folderURL = newFolderURL {
-                viewModel.loadImages(from: folderURL)
+        .onChange(of: appState.openURLs) { newURLs in
+            // 打开来源发生变化时重新加载
+            if !newURLs.isEmpty {
+                viewModel.loadImages(from: newURLs)
             }
         }
         // P0-2 修复：通知订阅改用 `.onReceive`，不再用 `onAppear` + `@State cancellables`。
@@ -78,13 +78,8 @@ struct ImageBrowserView: View {
         //
         // `.onReceive` 的订阅生命周期由 SwiftUI 绑定到视图自身：不会累积，
         // 也不需要手动 `store` / `cancel`，因此从结构上消除了这两个问题。
-        .onReceive(NotificationManager.shared.publisher(for: .reloadImages)) { notification in
-            if let userInfo = notification.userInfo,
-               let folderURL = userInfo["folderURL"] as? URL {
-                viewModel.loadImages(from: folderURL)
-            } else if let folderURL = appState.selectedFolderURL {
-                viewModel.loadImages(from: folderURL)
-            }
+        .onReceive(NotificationManager.shared.publisher(for: .reloadImages)) { _ in
+            viewModel.reloadCurrent()
         }
         // `r` 快捷键：原地刷新当前目录（拾取新增 / 删除的图片）。
         // 走 `refresh()` 而不是 `loadImages()`——前者**不清空列表**，
