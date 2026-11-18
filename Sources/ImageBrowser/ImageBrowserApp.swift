@@ -407,12 +407,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         
         // 首次打开：创建窗口，并配置只需做一次的外观属性
-        let window = NSWindow(
+        //
+        // 用 `DetailWindow` 而不是 `NSWindow`：详情窗口是 `.fullSizeContentView`，
+        // SwiftUI 内容铺满整窗，挂在根视图上的双击手势会把标题栏（尤其标题文字）
+        // 也算进"双击返回列表"，导致窗口失焦时点一下标题文字就退回列表。
+        // 现在双击判定下沉到窗口层并排除标题栏，详见 `DetailWindow.swift`。
+        let window = DetailWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1024, height: 600),
             styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        
+        // 内容区真实双击 → 通知当前详情页返回列表（标题栏双击已被窗口过滤）。
+        window.onContentDoubleClick = {
+            NotificationManager.shared.detailWindowContentDoubleClick()
+        }
         
         window.title = "\(imageItem.name)"
         window.titlebarAppearsTransparent = true

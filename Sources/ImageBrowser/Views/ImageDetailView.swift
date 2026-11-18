@@ -341,11 +341,15 @@ struct ImageDetailView: View {
         }
         .frame(minWidth: 50, minHeight: 50)
         .edgesIgnoringSafeArea([.top, .leading, .trailing])
-        .onTapGesture(count: 2) {
-            // 双击隐藏单页窗口并显示列表窗口
-            print("Double-tap detected on detail view, hiding detail window and opening browser window")
-
-            // 调用switchToBrowserView方法，确保停止自动播放
+        .onReceive(NotificationManager.shared.publisher(for: .detailWindowContentDoubleClick)) { _ in
+            // 双击内容区 → 隐藏单页窗口并显示列表窗口。
+            //
+            // 不再用挂在根视图上的 `.onTapGesture(count: 2)`：本视图铺满整窗
+            // （`.fullSizeContentView`），手势的判定范围包含标题栏，而标题栏里的
+            // 标题文字是 `acceptsFirstMouse == true` 的 `NSTextField`——窗口失焦时
+            // 点它不会被激活点击吞掉，会被 SwiftUI 当成双击，导致"点一下标题文字
+            // 就退回列表"。现在由 `DetailWindow` 在窗口层判定：必须是 clickCount == 2
+            // 且落在标题栏以下的内容区，才发出本通知。
             switchToBrowserView()
         }
         .onReceive(NotificationManager.shared.publisher(for: .scrollWheel)) { notification in

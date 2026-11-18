@@ -9,6 +9,8 @@ extension Notification.Name {
     static let openImageFolder = Notification.Name("com.imagebrowser.openImageFolder")
     static let openBrowserWindow = Notification.Name("com.imagebrowser.openBrowserWindow")
     static let openDetailWindow = Notification.Name("com.imagebrowser.openDetailWindow")
+    /// 详情窗口内容区发生真正的双击（标题栏区域已被 `DetailWindow` 过滤）。
+    static let detailWindowContentDoubleClick = Notification.Name("com.imagebrowser.detailWindowContentDoubleClick")
     static let showLaunchWindow = Notification.Name("com.imagebrowser.showLaunchWindow")
     // P1-14 修复：`.updateBrowserWindowTitle` 已移除。
     // 列表窗口标题改由 AppDelegate 直接订阅 `AppState.shared.$images` 刷新，
@@ -110,6 +112,14 @@ class NotificationManager: ObservableObject {
     /// 发送打开图片文件夹通知
     func openImageFolder() {
         post(name: .openImageFolder)
+    }
+    
+    /// 内容区双击（返回列表）
+    ///
+    /// 由 `DetailWindow` 在确认是"标题栏以下的内容区 + 真正的双击"后发出；
+    /// 详情页收到后走 `switchToBrowserView()`（会先停掉自动播放）。
+    func detailWindowContentDoubleClick() {
+        post(name: .detailWindowContentDoubleClick)
     }
     
     /// 发送打开浏览器窗口通知
